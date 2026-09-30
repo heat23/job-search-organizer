@@ -1,0 +1,27 @@
+{
+  "name": "job-search-organizer",
+  "version": "1.0.0",
+  "description": "A job search organizer in one HTML file. Your data stays in a folder on your own computer.",
+  "private": true,
+  "license": "MIT",
+  "author": "Sudhir Prakash",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "bundle": "node tools/bundle.mjs boards/sample && node tools/bundle.mjs boards/empty",
+    "check": "node tools/build.mjs --check && node tools/bundle.mjs boards/sample --check && node tools/bundle.mjs boards/empty --check",
+    "test": "node tests/run.mjs",
+    "format": "prettier --write \"src/**/*.{js,css,html}\" \"tools/*.mjs\" \"tests/*.{js,mjs}\"",
+    "lint": "prettier --check \"src/**/*.{js,css,html}\" \"tools/*.mjs\" \"tests/*.{js,mjs}\"",
+    "screenshots": "node tools/capture.mjs",
+    "sample": "node tools/make-sample.mjs && node tools/bundle.mjs boards/sample && node tools/bundle.mjs boards/empty",
+    "demo": "node tools/build-demo.mjs"
+  },
+  "devDependencies": {
+    "acorn": "^8.14.0",
+    "playwright": "~1.56.0",
+    "prettier": "^3.3.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

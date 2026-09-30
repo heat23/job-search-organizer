@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <title>Job Search Organizer</title>
+    <!-- @inline-css -->
+  </head>
+  <body>
+    <div class="top">
+      <h1 id="appTitle">Job Search Organizer</h1>
+      <button class="btn primary" id="addBtn" type="button">+ Add</button>
+    </div>
+    <nav class="nav" id="nav" role="tablist" aria-label="Sections"></nav>
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="Search this tab  ( / )" aria-label="Search this tab" />
+      <div class="status" id="status" role="status"></div>
+    </div>
+    <div id="banner"></div>
+    <div id="view"></div>
+    <div class="foot">
+      <span>This page and your data stay on your computer, in the folder this page is in.</span>
+      <button class="linkbtn" id="backupBtn" type="button">Download a backup copy</button>
+      <button class="linkbtn" id="keysBtn" type="button">Keyboard shortcuts ( ? )</button>
+      <button class="linkbtn" id="backupNotesBtn" type="button">Back up notes now</button>
+      <button class="linkbtn" id="secondBackupBtn" type="button">Second backup folder…</button>
+      <span id="backupStatus"></span>
+    </div>
+    <div id="drawerRoot"></div>
+    <div id="toastRoot" role="status" aria-live="polite"></div>
+
+    <!-- Your settings (optional), your data, and the guide bundle: all plain files next to this page. -->
+    <script src="organizer.config.js"></script>
+    <script src="board_data.js"></script>
+    <script src="Library/_bundle.js"></script>
+    <!-- @inline-js -->
+  </body>
+</html>

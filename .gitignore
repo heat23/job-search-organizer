@@ -1,0 +1,11 @@
+node_modules/
+docs/.video/
+_site/
+.DS_Store
+# What the app writes when you try saving in the sample board (reset with: git checkout boards/sample)
+boards/*/backups/
+boards/*/Job notes/**/my_notes*.md
+boards/*/Job notes/hunters/*/
+boards/*/Library/My_answers.md
+boards/*/4 - Removed/
+# Never commit a real board: keep yours outside this repository.

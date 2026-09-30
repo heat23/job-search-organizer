@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.pdf binary
+*.png binary
+*.gif binary
+boards/*/organizer.html linguist-generated=true
+boards/*/Library/_bundle.js linguist-generated=true
