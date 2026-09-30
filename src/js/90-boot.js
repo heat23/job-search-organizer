@@ -92,8 +92,9 @@ const startTimer = setInterval(() => {
     setInterval(startup, 20 * 60 * 1000);
   }
 }, 2500);
-/* Pick up changes another tool made to the data file while this page was open. */
+/* Pick up changes another tool (a script, an AI assistant) made while this page was open: new prep sheets, then the data file. */
 window.addEventListener("focus", async () => {
+  if (FS.ok() && !$("#drawerRoot").childNodes.length) await scanPrep();
   if (dirHandle && canWrite && !writing && !$("#drawerRoot").childNodes.length) {
     const before = collectionsOnly(store);
     const r = await readFileInto();
@@ -109,7 +110,16 @@ window.addEventListener("focus", async () => {
     if (collectionsOnly(store) !== before) {
       persistLocal();
       render();
+      /* a card moved by another tool gets its job folder filed by stage right away */
+      setTimeout(fileJobs, 50);
     } else renderStatus();
+    /* The file is missing something this browser has (a tool wrote back an older or partial copy): write it back. */
+    if (r === "ok" && lastRaw && collectionsOnly(normalize(parseDataText(lastRaw))) !== collectionsOnly(store)) {
+      gen++;
+      dirty = true;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(writeFile, 400);
+    }
   }
 });
 /* Keep two open copies of the page in step. */

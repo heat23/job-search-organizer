@@ -43,7 +43,7 @@ The scripts are classic scripts joined in file-name order, not ES modules, becau
 
 ## Tests
 
-`npm test` runs 146 checks in headless Chromium against a copy of `boards/sample`. An in-memory folder (`src/demo/memfs.js`, with test hooks in `tests/ffs.js`) stands in for the folder picker, so the tests cover saving, conflicts, permission loss and write failures without touching the disk.
+`npm test` runs 156 checks in headless Chromium against a copy of `boards/sample`. An in-memory folder (`src/demo/memfs.js`, with test hooks in `tests/ffs.js`) stands in for the folder picker, so the tests cover saving, conflicts, permission loss and write failures without touching the disk.
 
 ## The live demo
 

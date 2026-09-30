@@ -457,7 +457,7 @@ function renderBanner() {
           "div",
           {},
           el("strong", { text: "Live demo. " }),
-          "A made-up senior engineer's job search, running in your browser. Drag a card, open a job to see its prep sheet, type in the notes. Nothing is uploaded, and reloading starts over.",
+          "A made-up senior engineer's job search, running in your browser. In real use, your AI assistant keeps the board and prep sheets up to date; here you can drag a card, open a job to see its prep sheet, or type in the notes. Nothing is uploaded, and reloading starts over.",
         ),
         el(
           "div",

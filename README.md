@@ -1,6 +1,6 @@
 # Job Search Organizer
 
-**Your whole job search in one HTML file.** Boards for jobs, headhunters and referrals, a prep sheet for every call, and your notes, all saved as plain files in a folder on your own computer. No server, no account, no install.
+**A job search board your AI assistant keeps up to date.** Tell ChatGPT, Claude or any AI assistant what happened (you applied, a recruiter emailed, a call got booked) and it updates the board, moves the cards and writes your interview prep. You open one HTML file to see where everything stands. It's all plain files in a folder on your own computer: no server, no account, no install.
 
 [![CI](https://github.com/heat23/job-search-organizer/actions/workflows/ci.yml/badge.svg)](https://github.com/heat23/job-search-organizer/actions/workflows/ci.yml) ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![No server](https://img.shields.io/badge/server-none-1e8a5a) ![No dependencies](https://img.shields.io/badge/runtime%20dependencies-0-1e8a5a)
 
@@ -10,11 +10,68 @@ A made-up senior engineer's job search, running in your browser. Nothing to inst
 
 [![Demo: moving a job to Applied, opening its prep sheet, taking notes, quick open and the guide search](docs/images/demo.gif)](https://heat23.github.io/job-search-organizer/)
 
-## Why
+## How it works
 
-- **Private by design.** Your data lives in files you own: a JSON data file, Markdown notes and your résumé PDFs. The page makes no network requests.
-- **Built for the call itself.** Talking points on the left, a notes pad on the right, and number keys to jump between sections while you talk.
-- **Nothing to set up.** Open the file in Chrome or Edge, pick a folder, done.
+1. **You talk to your assistant** in plain words: *"I applied to Lumenfield today with résumé v3."*
+2. **It edits the files** in your board folder, following [`AGENTS.md`](boards/empty/AGENTS.md), the instructions every board folder includes for AI assistants.
+3. **You switch back to the page.** The changes are there, tagged **New from assistant**. The job's résumé folder has moved to its new stage and follow-up dates are set. The prep sheet is ready for your call.
+
+You can still drag cards and edit everything by hand, but the idea is that you don't have to.
+
+## Use it with your AI assistant
+
+**If your assistant can work in a folder on your computer** (the Claude desktop app with the folder added, Claude Code, Codex, Cursor, Gemini CLI and similar), point it at your board folder. It reads `AGENTS.md` and edits the files directly. Start a new chat with:
+
+```
+Read AGENTS.md in my job search folder. From now on, keep my board up to date as I tell you what happens.
+```
+
+**If you use a chat in the browser** (ChatGPT, Claude or Gemini), attach `board_data.js` and `AGENTS.md`, ask for your change, then save the file it gives back over the old one. For a prep sheet, ask for `prep.md` and save it in `Job notes/<job id>/`. If the file you get back is missing something, nothing is lost: the page keeps its own copy of every record and writes back anything missing.
+
+> Your board stays on your computer, but whatever you paste into a cloud AI tool is sent to that provider. Check its data settings before you share your résumé or notes.
+
+### Prompts to try
+
+**Add jobs**
+```
+Add this job to my board and save the posting to posting.md: https://jobs.example.com/acme/staff-engineer
+```
+```
+Here are six links from today's job alerts. Add the ones that fit a senior backend role. Star the two best fits and mark anything above my level as a long shot.
+```
+
+**Keep the board current**
+```
+I applied to the Brightwell Labs Search role today with résumé v2. Move it to Applied.
+```
+```
+Here's an email from the Tidewater recruiter: [paste]. Update the board: book the call, move the card, and add a to-do for anything I need to send.
+```
+```
+Harborlight turned me down. Close it as Rejected.
+```
+
+**Prepare for calls**
+```
+My call with Tidewater is Thursday at 2 pm with the hiring manager. Write Job notes/tidewater/prep.md from the posting and my résumé (attached). Keep each section short, and mark any answer you're not sure I'd give with ✎.
+```
+```
+Read my notes from the Tidewater call in Job notes/tidewater/my_notes.md. Move it to Interviewing, set the follow-up, and add a to-do to send a thank-you note today.
+```
+```
+Turn my notes on behavioral questions into a guide at Library/1_Interviews/03_Behavioral.md, using the same markup as the cheat sheet.
+```
+
+**Stay on top of it**
+```
+What's due this week? List late follow-ups with a two-line follow-up email for each, and close anything that has had no reply for three weeks.
+```
+```
+Mara at Kestrel Talent wants to submit me to Fernhill. Tell me first if I've already applied there myself, then update her card.
+```
+```
+Jamie Chen offered to refer me to Quillstone. Add Jamie to People and link them to the Quillstone job.
+```
 
 ## What it does
 
@@ -41,7 +98,8 @@ It also:
 
 1. Copy the **`boards/empty`** folder somewhere private, for example `Documents/Job Search`.
 2. Open `organizer.html` from that folder, click **Turn on saving** and pick the same folder.
-3. Optional: open `organizer.config.js` in a text editor to set your name, file names, lane names or stage folders.
+3. Point your AI assistant at the folder (see above). `AGENTS.md` is already there.
+4. Optional: open `organizer.config.js` in a text editor to set your name, file names, lane names or stage folders.
 
 To start from the sample guides, copy the `.md` files under `boards/sample/Library` into your own `Library` folder.
 
@@ -51,6 +109,7 @@ To start from the sample guides, copy the `.md` files under `boards/sample/Libra
 Job Search/
 ├── organizer.html          the app (open this)
 ├── organizer.config.js     your settings (optional)
+├── AGENTS.md               instructions for your AI assistant (CLAUDE.md points to it)
 ├── board_data.js           jobs, headhunters, people, to-dos, plan (JSON)
 ├── 1 - To apply/           one folder per job: Resume.pdf, Cover_Letter.pdf
 ├── 2 - Applied/  3 - Closed/  4 - Removed/
@@ -76,17 +135,13 @@ Guides are ordinary Markdown with a few extras. The sample guides show every one
 | `::: fold Title` … `:::` | a block you can open and close |
 | `## Pay {.pay}` | a pay section (optionally blurred until you press H, for screen sharing) |
 
-A job gets a prep sheet as soon as `Job notes/<job id>/prep.md` exists.
-
-## Works with scripts and AI assistants
-
-Because everything is plain files, any tool you trust can help: add jobs to `board_data.js`, write a prep sheet before a call, or draft a guide. The page picks up the changes, tags records **New from assistant**, and never overwrites a file it hasn't read. The rules for tools are at the top of `board_data.js`.
+A job gets a prep sheet as soon as `Job notes/<job id>/prep.md` exists. Your assistant knows this markup from `AGENTS.md`.
 
 ## How it's built
 
 - **No framework, no runtime dependencies.** 18 small plain-JavaScript files under `src/`, joined by an 80-line build script into one HTML file that runs from `file://`.
-- **Safe with other writers.** Records merge by `updatedAt`, nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so the page, a script and an AI assistant can all edit the same folder.
-- **Tested in a real browser.** 146 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
+- **Safe with other writers.** Records merge by `updatedAt`, nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
+- **Tested in a real browser.** 156 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
 - **Private.** Guides are escaped before rendering, and a test fails if the page makes any network request.
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -97,7 +152,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 npm install
 npx playwright install chromium   # once, for the tests
 npm run build                     # src/ -> boards/*/organizer.html
-npm test                          # 146 browser checks
+npm test                          # 156 browser checks
 npm run demo                      # the live demo page -> _site/index.html
 ```
 
