@@ -215,6 +215,38 @@ const EMPTY = "file://" + process.env.EMPTY_TREE + "/organizer.html";
       );
       await ctx.close();
     }
+    // ---- S9: the Headhunters and People tabs can be renamed (sections.*), the rest keeps its defaults
+    {
+      const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+      const p = await mkpage(ctx, {
+        config: { sections: { hunters: { label: "Recruiters", noun: "recruiter" }, people: { label: "Contacts" } } },
+      });
+      ok(
+        "S9 the tabs use the configured names",
+        /Recruiters/.test(await p.$eval("#nav-hunters", (e) => e.textContent)) &&
+          /Contacts/.test(await p.$eval("#nav-people", (e) => e.textContent)),
+      );
+      ok(
+        "S9 settings left out keep their defaults",
+        await p.evaluate(
+          () =>
+            CONFIG.sections.hunters.short === "Hunters" &&
+            CONFIG.sections.people.noun === "person" &&
+            SECTIONS.jobs.label === "Jobs",
+        ),
+      );
+      await p.click("#nav-hunters");
+      await wait(p, 200);
+      ok("S9 the add button uses the noun", /\+ Add recruiter/.test(await p.$eval("#addBtn", (e) => e.textContent)));
+      await p.keyboard.press("?");
+      await wait(p, 200);
+      ok(
+        "S9 the shortcuts list names the renamed tabs",
+        /Jobs, Recruiters, Contacts/.test(await p.$eval("#drawerRoot", (e) => e.textContent)),
+      );
+      ok("S9 no errors", p.errs.length === 0, p.errs.join("|"));
+      await ctx.close();
+    }
     // ---- S8: the page never talks to the network
     {
       const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });

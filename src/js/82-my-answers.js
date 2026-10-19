@@ -16,11 +16,15 @@ try {
 } catch (e) {
   MY = {};
 }
+/* A line in an answer that starts with "## " is written as "\## " so it is not read back as a new question
+   (a line that already starts with backslashes and "## " gets one more); reading removes one backslash. */
+const myEsc = (v) => v.replace(/^(\\*)## /gm, "\\$1## ");
+const myUnesc = (l) => l.replace(/^\\(\\*)## /, "$1## ");
 const myToMd = () =>
   "# My answers\nYour own versions of the example questions in the Prep library, and the answers you typed on prep sheets. The page reads and writes this file.\n\n" +
   Object.entries(MY)
     .filter(([, v]) => v && v.trim())
-    .map(([k, v]) => `## ${k}\n${v.trim()}\n`)
+    .map(([k, v]) => `## ${k}\n${myEsc(v.trim())}\n`)
     .join("\n");
 function myFromMd(t) {
   const o = {};
@@ -32,7 +36,7 @@ function myFromMd(t) {
       if (k) o[k] = buf.join("\n").trim();
       k = normK(m[1]);
       buf = [];
-    } else if (k) buf.push(l);
+    } else if (k) buf.push(myUnesc(l));
   }
   if (k) o[k] = buf.join("\n").trim();
   return o;

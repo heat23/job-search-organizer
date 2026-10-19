@@ -93,13 +93,27 @@ const startTimer = setInterval(() => {
   }
 }, 2500);
 /* Pick up changes another tool (a script, an AI assistant) made while this page was open: new prep sheets, then the data file.
-   With a panel or prep sheet open, the changes are merged in the background: the panel and the notes pad stay as they are,
-   and the board is redrawn and job folders are filed when the panel closes. */
+   With a panel or prep sheet open, the changes are merged in the background: the notes pad stays as it is, the panel's
+   fields show the merged values (except one you are typing in, see refreshDrawer), and the board is redrawn and job
+   folders are filed when the panel closes. */
 const panelOpen = () => $("#drawerRoot").childNodes.length > 0;
 window.addEventListener("focus", async () => {
+  const ref = panelOpen() && openRef ? { ...openRef } : null;
+  const recBefore = ref ? JSON.stringify(get(ref.sec, ref.id) || null) : "";
+  const prepBefore = ref ? PREPTXT[ref.id] : undefined;
+  const syncPanel = () => {
+    if (!ref || !openRef || openRef.sec !== ref.sec || openRef.id !== ref.id) return;
+    if (JSON.stringify(get(ref.sec, ref.id) || null) !== recBefore || PREPTXT[ref.id] !== prepBefore) refreshDrawer();
+  };
+  /* an open prep sheet checks its own prep.md; a plain panel does not, so its job is scanned like the rest */
   if (FS.ok())
     await scanPrep(
-      panelOpen() ? { quiet: true, skip: openRef && openRef.sec === "jobs" ? openRef.id : null } : undefined,
+      panelOpen()
+        ? {
+            quiet: true,
+            skip: openRef && openRef.sec === "jobs" && $("#drawerRoot .drawer.prep") ? openRef.id : null,
+          }
+        : undefined,
     );
   if (dirHandle && canWrite && !writing) {
     const before = collectionsOnly(store);
@@ -107,6 +121,7 @@ window.addEventListener("focus", async () => {
     if (r === "bad") {
       saveErr = "bad";
       renderStatus();
+      syncPanel();
       return;
     }
     if (r === "ok" && saveErr === "bad") {
@@ -117,7 +132,6 @@ window.addEventListener("focus", async () => {
       persistLocal();
       if (panelOpen()) {
         fileOnClose = true;
-        refreshDrawerHead();
         renderStatus();
       } else {
         render();
@@ -133,6 +147,7 @@ window.addEventListener("focus", async () => {
       saveTimer = setTimeout(writeFile, 400);
     }
   }
+  syncPanel();
 });
 /* Keep two open copies of the page in step. */
 window.addEventListener("storage", (e) => {

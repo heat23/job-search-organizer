@@ -346,6 +346,143 @@ const MINE1 = "Why are you looking to leave your current team?";
       ok("D no errors", p.errs.length === 0, p.errs.join("|"));
       await ctx.close();
     }
+    // ---- H: an assistant edit to the open record refreshes the panel's fields, so a later edit can't undo it
+    {
+      const ASSIST = "Assistant: the team is hiring two engineers this quarter.";
+      const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+      const p = await mkpage(ctx, { connect: true });
+      await p.click("#nav-jobs");
+      await wait(p, 3000);
+      await openJob(p, "fernhill");
+      ok("H a To-apply job without a prep sheet opens the plain panel", !(await sheetOpen(p)));
+      const d = copy();
+      Object.assign(d.jobs.fernhill, { notes: ASSIST, updatedAt: now(), changedBy: "assistant" });
+      await p.evaluate((t) => window.__put("board_data.js", t), withData(d));
+      await focus(p);
+      ok(
+        "H focus shows the assistant's notes in the open panel",
+        (await p.$eval("#f-notes", (e) => e.value)) === ASSIST,
+        await p.$eval("#f-notes", (e) => e.value),
+      );
+      await p.focus("#f-notes");
+      await p.evaluate(() => {
+        const t = document.querySelector("#f-notes");
+        t.setSelectionRange(t.value.length, t.value.length);
+      });
+      await p.keyboard.type(" Then I asked about the stack.");
+      await wait(p, 2000);
+      const file = parseBoard(await p.evaluate(() => window.__get("board_data.js")));
+      ok(
+        "H typing after the refresh keeps the assistant's text and adds yours, in the file",
+        file.jobs.fernhill.notes === ASSIST + " Then I asked about the stack.",
+        file.jobs.fernhill.notes,
+      );
+      ok("H no errors", p.errs.length === 0, p.errs.join("|"));
+      await ctx.close();
+    }
+    // ---- H2: the same while you are typing in that field: your text is kept; other fields still update
+    {
+      const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+      const p = await mkpage(ctx, { connect: true });
+      await p.click("#nav-jobs");
+      await wait(p, 3000);
+      await openJob(p, "fernhill");
+      await p.click("#drawerRoot details.edit summary");
+      const before = await p.$eval("#f-notes", (e) => e.value);
+      await p.focus("#f-notes");
+      await p.evaluate(() => {
+        const t = document.querySelector("#f-notes");
+        t.setSelectionRange(t.value.length, t.value.length);
+      });
+      await p.keyboard.type(" Typing now");
+      const d = copy();
+      Object.assign(d.jobs.fernhill, {
+        notes: "Assistant rewrote the notes.",
+        location: "Remote (assistant)",
+        updatedAt: now(),
+        changedBy: "assistant",
+      });
+      await p.evaluate((t) => window.__put("board_data.js", t), withData(d));
+      await focus(p);
+      await wait(p, 800);
+      const field = await p.$eval("#f-notes", (e) => e.value);
+      const file = parseBoard(await p.evaluate(() => window.__get("board_data.js")));
+      ok(
+        "H2 the field you are typing in keeps your text, in the page and the file",
+        field === before + " Typing now" &&
+          (await p.evaluate(() => get("jobs", "fernhill").notes)) === field &&
+          file.jobs.fernhill.notes === field,
+        JSON.stringify([field, file.jobs.fernhill.notes]),
+      );
+      ok(
+        "H2 a field you are not typing in shows the assistant's value",
+        (await p.$eval("#f-location", (e) => e.value)) === "Remote (assistant)" &&
+          file.jobs.fernhill.location === "Remote (assistant)",
+      );
+      ok("H2 no errors", p.errs.length === 0, p.errs.join("|"));
+      await ctx.close();
+    }
+    // ---- I: with a plain panel open, the job's own new prep.md is still picked up on focus
+    {
+      const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+      const p = await mkpage(ctx, { connect: true });
+      await p.click("#nav-jobs");
+      await wait(p, 3000);
+      await openJob(p, "quillstone");
+      const btn = () => p.getByRole("button", { name: "Open prep sheet" }).count();
+      ok("I no prep sheet yet: no Open prep sheet button", !(await sheetOpen(p)) && (await btn()) === 0);
+      await p.evaluate(() => window.__put("Job notes/quillstone/prep.md", "# Quillstone\n\n## Your opener\n- Hello\n"));
+      await focus(p);
+      ok(
+        "I focus reads the open job's prep.md and offers Open prep sheet",
+        (await p.evaluate(() => /Quillstone/.test(Prep.prep.quillstone || ""))) && (await btn()) === 1,
+      );
+      ok("I no errors", p.errs.length === 0, p.errs.join("|"));
+      await ctx.close();
+    }
+    // ---- J: an answer with a line starting "## " round-trips through My_answers.md
+    {
+      const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+      const p = await mkpage(ctx, { connect: true });
+      await p.click("#nav-jobs");
+      await openJob(p, JOB);
+      await p.locator("#drawerRoot details.mine.ask textarea").first().click();
+      await p.keyboard.type("First line\n## Heading inside\nLast line");
+      await wait(p, 1600);
+      const md = (await p.evaluate(() => window.__get("Library/My_answers.md"))) || "";
+      ok(
+        "J a line starting with ## is written escaped",
+        md.includes(`## prep:${JOB}::${ASK1}\nFirst line\n\\## Heading inside\nLast line`) &&
+          !/^## Heading inside$/m.test(md),
+        md.slice(0, 300),
+      );
+      ok(
+        "J older files without escapes read the same, and a typed backslash line survives",
+        await p.evaluate(() => {
+          const a = myFromMd("# My answers\n\n## q one\nline\n\n## q two\n> said\n");
+          const typed = "\\## kept as typed";
+          MY.__t = typed;
+          const back = myFromMd(myToMd()).__t;
+          delete MY.__t;
+          return a["q one"] === "line" && a["q two"] === "> said" && back === typed;
+        }),
+      );
+      await ctx.close();
+      const ctx2 = await b.newContext({ viewport: { width: 1440, height: 900 } });
+      const p2 = await mkpage(ctx2, { connect: true, extra: { "Library/My_answers.md": md } });
+      await p2.click("#nav-jobs");
+      await openJob(p2, JOB);
+      await wait(p2, 500);
+      const keys = await p2.evaluate(() => Object.keys(MY));
+      ok(
+        "J a fresh browser reads the answer back whole, with no extra key",
+        (await p2.$eval("#drawerRoot details.mine.ask textarea", (t) => t.value)) ===
+          "First line\n## Heading inside\nLast line" && !keys.some((k) => /Heading inside/.test(k)),
+        JSON.stringify(keys),
+      );
+      ok("J no errors", p.errs.length === 0 && p2.errs.length === 0, p.errs.concat(p2.errs).join("|"));
+      await ctx2.close();
+    }
     // ---- E: Next up actions: Log follow-up (with Undo), Snooze a week, Keep waiting
     {
       const d = copy();

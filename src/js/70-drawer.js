@@ -29,6 +29,53 @@ function refreshDrawerHead() {
     if (u) a.href = u;
   }
 }
+/* Another tool (an AI assistant) changed the open record and the change was merged in the background: bring the panel's
+   fields up to date, so a later edit can't write the old text back over the newer value. A field you are typing in, or
+   one with an unsaved edit, is left as it is: your typing wins there. The notes pad and the answer boxes keep their
+   own files and are not touched. A plain panel whose stage changed (or whose prep sheet just appeared) is rebuilt
+   when nothing in it is being edited. */
+function fieldValue(n, x) {
+  const k = n.dataset.fkey,
+    kind = n.dataset.fkind;
+  if (kind === "iso") return isoToLocalDate(x[k]);
+  if (kind === "local") return toLocalInput(x[k]);
+  if (kind === "ref") return x[k] && get("people", x[k]) ? x[k] : "";
+  return x[k] || "";
+}
+function refreshDrawer() {
+  if (!openRef) return;
+  const { sec, id } = openRef;
+  const x = get(sec, id);
+  const d = $("#drawerRoot .drawer");
+  if (!x || !d || d.tagName === "FORM") return;
+  refreshDrawerHead();
+  const a = document.activeElement;
+  const editing =
+    Object.keys(pending).length > 0 || !!(a && d.contains(a) && a.matches("input,textarea,select,[contenteditable]"));
+  const ln = laneKey(sec, x);
+  if (!d.classList.contains("prep") && !editing && (d.dataset.lane !== ln || d.dataset.prep !== prepFlag(sec, id))) {
+    openDrawer(sec, id, true);
+    return;
+  }
+  d.querySelectorAll("[data-fkey]").forEach((n) => {
+    if (n === a || pending[n.dataset.fkey]) return;
+    const v = fieldValue(n, x);
+    if (n.dataset.fkind === "ref" && v && ![...n.options].some((o) => o.value === v)) {
+      const p = get("people", v);
+      n.lastElementChild.before(
+        el("option", { value: v, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
+      );
+    }
+    if (n.value !== v) n.value = v;
+  });
+  d.querySelectorAll("#lanepick button").forEach((b) => b.setAttribute("aria-pressed", String(b.id === "lp-" + ln)));
+  d.querySelectorAll("[data-reason]").forEach((c) =>
+    c.setAttribute("aria-pressed", String(x.closedReason === c.dataset.reason)),
+  );
+  const strip = d.querySelector(".pstrip");
+  if (strip) strip.innerHTML = stripHtml(x);
+}
+const prepFlag = (sec, id) => (sec === "jobs" && validPrep(PREPTXT[id]) ? "1" : "");
 function textField(sec, id, key, label, opts = {}) {
   const x = get(sec, id);
   const fid = "f-" + key;
@@ -36,6 +83,7 @@ function textField(sec, id, key, label, opts = {}) {
     ? el("textarea", { id: fid, placeholder: opts.placeholder || "" })
     : el("input", { type: key === "url" ? "url" : "text", id: fid, placeholder: opts.placeholder || "" });
   inp.value = x[key] || "";
+  inp.dataset.fkey = key;
   const saved = el("div", { class: "saved", "aria-live": "polite" });
   const commit = () => {
     const cur = get(sec, id);
@@ -85,6 +133,8 @@ function dateField(sec, id, key, label, iso) {
   const x = get(sec, id);
   const inp = el("input", { type: "date", id: "f-" + key });
   inp.value = iso ? isoToLocalDate(x[key]) : x[key] || "";
+  inp.dataset.fkey = key;
+  if (iso) inp.dataset.fkind = "iso";
   inp.addEventListener("change", () => {
     const v = inp.value ? (iso ? new Date(inp.value + "T12:00:00").toISOString() : inp.value) : null;
     upd(sec, id, { [key]: v });
@@ -205,9 +255,11 @@ function openDrawer(sec, id, keepFocus) {
             class: "chip",
             type: "button",
             "aria-pressed": String(x.closedReason === r),
+            "data-reason": r,
             text: r,
             onclick: () => {
-              upd(sec, id, { closedReason: x.closedReason === r ? null : r });
+              const cur = get(sec, id) || x;
+              upd(sec, id, { closedReason: cur.closedReason === r ? null : r });
               render();
               openDrawer(sec, id, true);
             },
@@ -230,7 +282,7 @@ function openDrawer(sec, id, keepFocus) {
     const people = Object.entries(live("people")).sort((a, b) => String(a[1].name).localeCompare(String(b[1].name)));
     const sel = el(
       "select",
-      { id: "f-referral" },
+      { id: "f-referral", "data-fkey": "referralId", "data-fkind": "ref" },
       el("option", { value: "", text: "No one yet" }),
       ...people.map(([pid, p]) =>
         el("option", { value: pid, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
@@ -240,7 +292,7 @@ function openDrawer(sec, id, keepFocus) {
     sel.value = x.referralId && get("people", x.referralId) ? x.referralId : "";
     sel.addEventListener("change", () => {
       if (sel.value === "__new") {
-        sel.value = x.referralId || "";
+        sel.value = (get("jobs", id) || x).referralId || "";
         openAdd("people", { company: x.company, ask: "Referral for " + (x.role || x.company) }, { linkJob: id });
         return;
       }
@@ -285,7 +337,15 @@ function openDrawer(sec, id, keepFocus) {
   );
   const d = el(
     "aside",
-    { class: "drawer", role: "dialog", "aria-modal": "true", "aria-labelledby": "dTitle", tabindex: "-1" },
+    {
+      class: "drawer",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "dTitle",
+      tabindex: "-1",
+      "data-lane": ln,
+      "data-prep": prepFlag(sec, id),
+    },
     el("button", { class: "close", type: "button", "aria-label": "Close", text: "×", onclick: closeDrawer }),
     el(
       "div",
@@ -492,15 +552,15 @@ function openKeys() {
     .map((b) => `${b.key.toUpperCase()} ${b.label.toLowerCase()}`)
     .join(" · ");
   const rows = [
-    ["1 – 6", "Switch tabs: Next up, To-dos, Jobs, Headhunters, People, Prep library"],
-    ["G or Ctrl/⌘ K", "Quick open: jump to any job, headhunter, person or guide"],
+    ["1 – 6", `Switch tabs: Next up, To-dos, Jobs, ${SECTIONS.hunters.label}, ${SECTIONS.people.label}, Prep library`],
+    ["G or Ctrl/⌘ K", `Quick open: jump to any job, ${SECTIONS.hunters.noun}, ${SECTIONS.people.noun} or guide`],
     [
       "In a prep sheet",
       `The cursor starts in your notes. Esc, then 1–9 jump to a section · ${sheetKeys} · N back to notes · / filter${CONFIG.blurPay ? " · H show pay" : ""} · Esc again closes`,
     ],
     ["/", "Search this tab (on Next up: quick open)"],
     ...(CONFIG.blurPay ? [["H", "In the Prep library and prep sheets: show or blur pay sections"]] : []),
-    ["N", "Add a job, headhunter or person"],
+    ["N", `Add a job, ${SECTIONS.hunters.noun} or ${SECTIONS.people.noun}`],
     ["Enter", "Open the selected card"],
     ["Esc", "Close a panel or clear search"],
     ["Ctrl/⌘ + Z", "Undo the last change"],

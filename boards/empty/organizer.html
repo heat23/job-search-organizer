@@ -2199,6 +2199,12 @@ const DEFAULT_CONFIG = {
     hunters: { lanes: ["contacted"], days: 30, close: "paused", label: "Move to Not now" },
     people: { lanes: ["asked"], days: 21, close: "noreply", label: "Mark no reply" },
   },
+  /* Names of the Headhunters and People tabs: `label` on the tab, `short` on narrow windows, `noun` for one card
+     ("+ Add headhunter"). Rename them to fit how you search, e.g. { label: "Recruiters", short: "Recruiters", noun: "recruiter" }. */
+  sections: {
+    hunters: { label: "Headhunters", short: "Hunters", noun: "headhunter" },
+    people: { label: "People", short: "People", noun: "person" },
+  },
   closedReasons: ["Rejected", "Withdrew", "Posting closed", "No reply", "Took another offer"],
   callTypes: ["Recruiter screen", "Hiring manager", "Panel", "Onsite", "Headhunter call", "Other"],
   /* The checklist shown on the Headhunters tab (records live in the `plan` collection). */
@@ -2377,9 +2383,9 @@ const SECTIONS = {
     empty: { todo: "Nothing waiting.", _: "" },
   },
   hunters: {
-    label: "Headhunters",
-    short: "Hunters",
-    noun: "headhunter",
+    label: CONFIG.sections.hunters.label,
+    short: CONFIG.sections.hunters.short,
+    noun: CONFIG.sections.hunters.noun,
     lanes: laneList("hunters"),
     title: (h) => h.name || "Untitled",
     sub: (h) => (h.firm && h.firm !== h.name ? h.firm + (h.practice ? " · " + h.practice : "") : h.practice),
@@ -2411,9 +2417,9 @@ const SECTIONS = {
     empty: { todo: "Add a firm or a partner.", _: "" },
   },
   people: {
-    label: "People",
-    short: "People",
-    noun: "person",
+    label: CONFIG.sections.people.label,
+    short: CONFIG.sections.people.short,
+    noun: CONFIG.sections.people.noun,
     lanes: laneList("people"),
     title: (p) => p.name || "Someone",
     sub: (p) => [p.company, p.ask].filter(Boolean).join(" · "),
@@ -4437,6 +4443,53 @@ function refreshDrawerHead() {
     if (u) a.href = u;
   }
 }
+/* Another tool (an AI assistant) changed the open record and the change was merged in the background: bring the panel's
+   fields up to date, so a later edit can't write the old text back over the newer value. A field you are typing in, or
+   one with an unsaved edit, is left as it is: your typing wins there. The notes pad and the answer boxes keep their
+   own files and are not touched. A plain panel whose stage changed (or whose prep sheet just appeared) is rebuilt
+   when nothing in it is being edited. */
+function fieldValue(n, x) {
+  const k = n.dataset.fkey,
+    kind = n.dataset.fkind;
+  if (kind === "iso") return isoToLocalDate(x[k]);
+  if (kind === "local") return toLocalInput(x[k]);
+  if (kind === "ref") return x[k] && get("people", x[k]) ? x[k] : "";
+  return x[k] || "";
+}
+function refreshDrawer() {
+  if (!openRef) return;
+  const { sec, id } = openRef;
+  const x = get(sec, id);
+  const d = $("#drawerRoot .drawer");
+  if (!x || !d || d.tagName === "FORM") return;
+  refreshDrawerHead();
+  const a = document.activeElement;
+  const editing =
+    Object.keys(pending).length > 0 || !!(a && d.contains(a) && a.matches("input,textarea,select,[contenteditable]"));
+  const ln = laneKey(sec, x);
+  if (!d.classList.contains("prep") && !editing && (d.dataset.lane !== ln || d.dataset.prep !== prepFlag(sec, id))) {
+    openDrawer(sec, id, true);
+    return;
+  }
+  d.querySelectorAll("[data-fkey]").forEach((n) => {
+    if (n === a || pending[n.dataset.fkey]) return;
+    const v = fieldValue(n, x);
+    if (n.dataset.fkind === "ref" && v && ![...n.options].some((o) => o.value === v)) {
+      const p = get("people", v);
+      n.lastElementChild.before(
+        el("option", { value: v, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
+      );
+    }
+    if (n.value !== v) n.value = v;
+  });
+  d.querySelectorAll("#lanepick button").forEach((b) => b.setAttribute("aria-pressed", String(b.id === "lp-" + ln)));
+  d.querySelectorAll("[data-reason]").forEach((c) =>
+    c.setAttribute("aria-pressed", String(x.closedReason === c.dataset.reason)),
+  );
+  const strip = d.querySelector(".pstrip");
+  if (strip) strip.innerHTML = stripHtml(x);
+}
+const prepFlag = (sec, id) => (sec === "jobs" && validPrep(PREPTXT[id]) ? "1" : "");
 function textField(sec, id, key, label, opts = {}) {
   const x = get(sec, id);
   const fid = "f-" + key;
@@ -4444,6 +4497,7 @@ function textField(sec, id, key, label, opts = {}) {
     ? el("textarea", { id: fid, placeholder: opts.placeholder || "" })
     : el("input", { type: key === "url" ? "url" : "text", id: fid, placeholder: opts.placeholder || "" });
   inp.value = x[key] || "";
+  inp.dataset.fkey = key;
   const saved = el("div", { class: "saved", "aria-live": "polite" });
   const commit = () => {
     const cur = get(sec, id);
@@ -4493,6 +4547,8 @@ function dateField(sec, id, key, label, iso) {
   const x = get(sec, id);
   const inp = el("input", { type: "date", id: "f-" + key });
   inp.value = iso ? isoToLocalDate(x[key]) : x[key] || "";
+  inp.dataset.fkey = key;
+  if (iso) inp.dataset.fkind = "iso";
   inp.addEventListener("change", () => {
     const v = inp.value ? (iso ? new Date(inp.value + "T12:00:00").toISOString() : inp.value) : null;
     upd(sec, id, { [key]: v });
@@ -4613,9 +4669,11 @@ function openDrawer(sec, id, keepFocus) {
             class: "chip",
             type: "button",
             "aria-pressed": String(x.closedReason === r),
+            "data-reason": r,
             text: r,
             onclick: () => {
-              upd(sec, id, { closedReason: x.closedReason === r ? null : r });
+              const cur = get(sec, id) || x;
+              upd(sec, id, { closedReason: cur.closedReason === r ? null : r });
               render();
               openDrawer(sec, id, true);
             },
@@ -4638,7 +4696,7 @@ function openDrawer(sec, id, keepFocus) {
     const people = Object.entries(live("people")).sort((a, b) => String(a[1].name).localeCompare(String(b[1].name)));
     const sel = el(
       "select",
-      { id: "f-referral" },
+      { id: "f-referral", "data-fkey": "referralId", "data-fkind": "ref" },
       el("option", { value: "", text: "No one yet" }),
       ...people.map(([pid, p]) =>
         el("option", { value: pid, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
@@ -4648,7 +4706,7 @@ function openDrawer(sec, id, keepFocus) {
     sel.value = x.referralId && get("people", x.referralId) ? x.referralId : "";
     sel.addEventListener("change", () => {
       if (sel.value === "__new") {
-        sel.value = x.referralId || "";
+        sel.value = (get("jobs", id) || x).referralId || "";
         openAdd("people", { company: x.company, ask: "Referral for " + (x.role || x.company) }, { linkJob: id });
         return;
       }
@@ -4693,7 +4751,15 @@ function openDrawer(sec, id, keepFocus) {
   );
   const d = el(
     "aside",
-    { class: "drawer", role: "dialog", "aria-modal": "true", "aria-labelledby": "dTitle", tabindex: "-1" },
+    {
+      class: "drawer",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "dTitle",
+      tabindex: "-1",
+      "data-lane": ln,
+      "data-prep": prepFlag(sec, id),
+    },
     el("button", { class: "close", type: "button", "aria-label": "Close", text: "×", onclick: closeDrawer }),
     el(
       "div",
@@ -4900,15 +4966,15 @@ function openKeys() {
     .map((b) => `${b.key.toUpperCase()} ${b.label.toLowerCase()}`)
     .join(" · ");
   const rows = [
-    ["1 – 6", "Switch tabs: Next up, To-dos, Jobs, Headhunters, People, Prep library"],
-    ["G or Ctrl/⌘ K", "Quick open: jump to any job, headhunter, person or guide"],
+    ["1 – 6", `Switch tabs: Next up, To-dos, Jobs, ${SECTIONS.hunters.label}, ${SECTIONS.people.label}, Prep library`],
+    ["G or Ctrl/⌘ K", `Quick open: jump to any job, ${SECTIONS.hunters.noun}, ${SECTIONS.people.noun} or guide`],
     [
       "In a prep sheet",
       `The cursor starts in your notes. Esc, then 1–9 jump to a section · ${sheetKeys} · N back to notes · / filter${CONFIG.blurPay ? " · H show pay" : ""} · Esc again closes`,
     ],
     ["/", "Search this tab (on Next up: quick open)"],
     ...(CONFIG.blurPay ? [["H", "In the Prep library and prep sheets: show or blur pay sections"]] : []),
-    ["N", "Add a job, headhunter or person"],
+    ["N", `Add a job, ${SECTIONS.hunters.noun} or ${SECTIONS.people.noun}`],
     ["Enter", "Open the selected card"],
     ["Esc", "Close a panel or clear search"],
     ["Ctrl/⌘ + Z", "Undo the last change"],
@@ -5693,11 +5759,15 @@ try {
 } catch (e) {
   MY = {};
 }
+/* A line in an answer that starts with "## " is written as "\## " so it is not read back as a new question
+   (a line that already starts with backslashes and "## " gets one more); reading removes one backslash. */
+const myEsc = (v) => v.replace(/^(\\*)## /gm, "\\$1## ");
+const myUnesc = (l) => l.replace(/^\\(\\*)## /, "$1## ");
 const myToMd = () =>
   "# My answers\nYour own versions of the example questions in the Prep library, and the answers you typed on prep sheets. The page reads and writes this file.\n\n" +
   Object.entries(MY)
     .filter(([, v]) => v && v.trim())
-    .map(([k, v]) => `## ${k}\n${v.trim()}\n`)
+    .map(([k, v]) => `## ${k}\n${myEsc(v.trim())}\n`)
     .join("\n");
 function myFromMd(t) {
   const o = {};
@@ -5709,7 +5779,7 @@ function myFromMd(t) {
       if (k) o[k] = buf.join("\n").trim();
       k = normK(m[1]);
       buf = [];
-    } else if (k) buf.push(l);
+    } else if (k) buf.push(myUnesc(l));
   }
   if (k) o[k] = buf.join("\n").trim();
   return o;
@@ -6150,6 +6220,14 @@ function callRow(sec, id, x, strip, summary) {
     }
   };
   [type, when, who, link].forEach((e) => e.addEventListener("change", commit));
+  /* so the panel can bring them up to date after another tool changes the call (see refreshDrawer) */
+  [
+    [type, "callType"],
+    [when, "callAt"],
+    [who, "callWith"],
+    [link, "callLink"],
+  ].forEach(([e, k]) => (e.dataset.fkey = k));
+  when.dataset.fkind = "local";
   row.append(type, when, who, link);
   if (x.callAt) {
     const clr = mk("button", "btn small");
@@ -6811,6 +6889,7 @@ document.addEventListener(
 
 /* ---- 86-quick-open.js ---- */
 /* ================= quick open (G or Ctrl/⌘ K): find any job, headhunter, person or guide question ================= */
+const upFirst = (t) => String(t).charAt(0).toUpperCase() + String(t).slice(1);
 let quickOpen = null;
 function openLibDoc(id, anchor) {
   libDoc = id;
@@ -6863,7 +6942,7 @@ function openQuick() {
   const prev = document.activeElement;
   const wrap = document.createElement("div");
   wrap.className = "hqo";
-  wrap.innerHTML = `<div class="hqscrim"></div><div class="hqbox" role="dialog" aria-label="Quick open"><input type="search" placeholder="Jump to a job, headhunter, person or question…" aria-label="Quick open"><div class="hqlist" role="listbox"></div><div class="hqhint"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</div></div>`;
+  wrap.innerHTML = `<div class="hqscrim"></div><div class="hqbox" role="dialog" aria-label="Quick open"><input type="search" placeholder="Jump to a job, ${esc(SECTIONS.hunters.noun)}, ${esc(SECTIONS.people.noun)} or question…" aria-label="Quick open"><div class="hqlist" role="listbox"></div><div class="hqhint"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</div></div>`;
   document.body.append(wrap);
   quickOpen = wrap;
   const inp = $q("input", wrap),
@@ -6927,7 +7006,7 @@ function openQuick() {
       items = [
         {
           note: words.length
-            ? `No job, headhunter, person or question matches “${inp.value.trim()}”. Open a guide:`
+            ? `No job, ${SECTIONS.hunters.noun}, ${SECTIONS.people.noun} or question matches “${inp.value.trim()}”. Open a guide:`
             : "Type a name or a question.",
         },
         ...fallbacks(),
@@ -6937,7 +7016,7 @@ function openQuick() {
       .map((a, i) =>
         a.note
           ? `<div class="hqi note" data-i="${i}">${esc(a.note)}</div>`
-          : `<div class="hqi${i === sel ? " on" : ""}" role="option" data-i="${i}"><b>${esc(a.title)}</b><span>${esc(a.sub)}</span><small>${a.lib ? "" : esc(a.sec === "jobs" ? "Job" : a.sec === "hunters" ? "Headhunter" : "Person") + " · "}<b class="hql">${esc(a.lane)}</b>${a.call ? " · 📞 " + esc(a.call) : ""}</small></div>`,
+          : `<div class="hqi${i === sel ? " on" : ""}" role="option" data-i="${i}"><b>${esc(a.title)}</b><span>${esc(a.sub)}</span><small>${a.lib ? "" : esc(a.sec === "jobs" ? "Job" : upFirst(SECTIONS[a.sec].noun)) + " · "}<b class="hql">${esc(a.lane)}</b>${a.call ? " · 📞 " + esc(a.call) : ""}</small></div>`,
       )
       .join("");
   }
@@ -7452,13 +7531,27 @@ const startTimer = setInterval(() => {
   }
 }, 2500);
 /* Pick up changes another tool (a script, an AI assistant) made while this page was open: new prep sheets, then the data file.
-   With a panel or prep sheet open, the changes are merged in the background: the panel and the notes pad stay as they are,
-   and the board is redrawn and job folders are filed when the panel closes. */
+   With a panel or prep sheet open, the changes are merged in the background: the notes pad stays as it is, the panel's
+   fields show the merged values (except one you are typing in, see refreshDrawer), and the board is redrawn and job
+   folders are filed when the panel closes. */
 const panelOpen = () => $("#drawerRoot").childNodes.length > 0;
 window.addEventListener("focus", async () => {
+  const ref = panelOpen() && openRef ? { ...openRef } : null;
+  const recBefore = ref ? JSON.stringify(get(ref.sec, ref.id) || null) : "";
+  const prepBefore = ref ? PREPTXT[ref.id] : undefined;
+  const syncPanel = () => {
+    if (!ref || !openRef || openRef.sec !== ref.sec || openRef.id !== ref.id) return;
+    if (JSON.stringify(get(ref.sec, ref.id) || null) !== recBefore || PREPTXT[ref.id] !== prepBefore) refreshDrawer();
+  };
+  /* an open prep sheet checks its own prep.md; a plain panel does not, so its job is scanned like the rest */
   if (FS.ok())
     await scanPrep(
-      panelOpen() ? { quiet: true, skip: openRef && openRef.sec === "jobs" ? openRef.id : null } : undefined,
+      panelOpen()
+        ? {
+            quiet: true,
+            skip: openRef && openRef.sec === "jobs" && $("#drawerRoot .drawer.prep") ? openRef.id : null,
+          }
+        : undefined,
     );
   if (dirHandle && canWrite && !writing) {
     const before = collectionsOnly(store);
@@ -7466,6 +7559,7 @@ window.addEventListener("focus", async () => {
     if (r === "bad") {
       saveErr = "bad";
       renderStatus();
+      syncPanel();
       return;
     }
     if (r === "ok" && saveErr === "bad") {
@@ -7476,7 +7570,6 @@ window.addEventListener("focus", async () => {
       persistLocal();
       if (panelOpen()) {
         fileOnClose = true;
-        refreshDrawerHead();
         renderStatus();
       } else {
         render();
@@ -7492,6 +7585,7 @@ window.addEventListener("focus", async () => {
       saveTimer = setTimeout(writeFile, 400);
     }
   }
+  syncPanel();
 });
 /* Keep two open copies of the page in step. */
 window.addEventListener("storage", (e) => {

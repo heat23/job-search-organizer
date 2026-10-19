@@ -103,6 +103,8 @@ It also:
 
 To start from the sample guides, copy the `.md` files under `boards/sample/Library` into your own `Library` folder.
 
+The four-week plan on the Headhunters tab is a sample you can edit or empty (the empty board starts without one): its steps are the `plan` records in `board_data.js`, which your assistant can rewrite, and `plan.*` in the config renames it. The Headhunters tab works for any agency or in-house recruiter, and `sections.*` in the config renames it and the People tab.
+
 ## Your data stays on your computer
 
 ```
@@ -124,14 +126,14 @@ Job Search/
 
 ## Guides and prep sheets
 
-Guides are ordinary Markdown with a few extras. The sample guides show every one of them.
+Guides are ordinary Markdown with a few extras. The sample guides show every one of them except `{.ask}`, which is for prep sheets (see `boards/sample/Job notes/lumenfield/prep.md`).
 
 | Write | Shows as |
 |---|---|
 | `## Section` / `### Question` | a card (with a jump key on a prep sheet) / a question in it (with a Copy button) |
 | `> What you'd say` | an answer with a Copy answer button |
 | `*<example answer>*` | an example, in a different color, left out when you copy |
-| `✎` / `☐` | not confirmed yet (adds a "My version" box) / a fact to find out |
+| `✎` / `☐` | not confirmed yet (adds a "My version" box, in the Library and on prep sheets) / a fact to find out |
 | `### Question {.ask}` | on a prep sheet, an open "Their answer" box for what the interviewer said |
 | `::: fold Title` … `:::` | a block you can open and close |
 | `## Pay {.pay}` | a pay section (optionally blurred until you press H, for screen sharing) |
@@ -142,7 +144,7 @@ A job gets a prep sheet as soon as `Job notes/<job id>/prep.md` exists. It opens
 
 - **No framework, no runtime dependencies.** 18 small plain-JavaScript files under `src/`, joined by an 80-line build script into one HTML file that runs from `file://`.
 - **Safe with other writers.** Records merge by `updatedAt`, nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
-- **Tested in a real browser.** 207 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
+- **Tested in a real browser.** 226 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
 - **Private.** Guides are escaped before rendering, and a test fails if the page makes any network request.
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -153,7 +155,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 npm install
 npx playwright install chromium   # once, for the tests
 npm run build                     # src/ -> boards/*/organizer.html
-npm test                          # 207 browser checks
+npm test                          # 226 browser checks
 npm run demo                      # the live demo page -> _site/index.html
 ```
 

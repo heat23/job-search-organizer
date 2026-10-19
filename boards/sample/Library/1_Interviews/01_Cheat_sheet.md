@@ -1,13 +1,13 @@
 # Cheat sheet (start here)
 
-Read this in the five minutes before a call. This sample also shows the markup every guide can use. Open it in a text editor next to the app to see how each piece is written.
+Read this in the five minutes before a call. This sample also shows the markup every guide can use (all but `{.ask}`, which is for prep sheets: see `Job notes/lumenfield/prep.md`). Open it in a text editor next to the app to see how each piece is written.
 
 ## How guides work
 
 - `## A heading` starts a card. `### A heading` starts a question inside the card. The page builds the table of contents and the jump keys from them.
 - Lines that start with `>` are what you'd say out loud. Each one gets a **Copy answer** button.
 - *<An example answer in angle brackets and stars, like this one.>* Examples show in a different color and are left out when you copy a card.
-- ✎ after a question means the answer isn't confirmed yet. The Library adds a **My version** box under it; what you type is saved to `Library/My_answers.md`.
+- ✎ after a question means the answer isn't confirmed yet. The Library and prep sheets add a **My version** box under it; what you type is saved to `Library/My_answers.md`.
 - ☐ marks a fact you still need to find out.
 - `::: fold Title` … `:::` makes a block you can open and close. `::: fold + Title` starts open.
 - `{.pay}` at the end of a heading marks a pay section. If you turn on `blurPay` in the settings, it stays blurred until you press H (handy when sharing your screen).

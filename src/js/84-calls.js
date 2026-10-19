@@ -111,6 +111,14 @@ function callRow(sec, id, x, strip, summary) {
     }
   };
   [type, when, who, link].forEach((e) => e.addEventListener("change", commit));
+  /* so the panel can bring them up to date after another tool changes the call (see refreshDrawer) */
+  [
+    [type, "callType"],
+    [when, "callAt"],
+    [who, "callWith"],
+    [link, "callLink"],
+  ].forEach(([e, k]) => (e.dataset.fkey = k));
+  when.dataset.fkind = "local";
   row.append(type, when, who, link);
   if (x.callAt) {
     const clr = mk("button", "btn small");

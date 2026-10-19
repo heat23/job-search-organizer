@@ -1,4 +1,5 @@
 /* ================= quick open (G or Ctrl/⌘ K): find any job, headhunter, person or guide question ================= */
+const upFirst = (t) => String(t).charAt(0).toUpperCase() + String(t).slice(1);
 let quickOpen = null;
 function openLibDoc(id, anchor) {
   libDoc = id;
@@ -51,7 +52,7 @@ function openQuick() {
   const prev = document.activeElement;
   const wrap = document.createElement("div");
   wrap.className = "hqo";
-  wrap.innerHTML = `<div class="hqscrim"></div><div class="hqbox" role="dialog" aria-label="Quick open"><input type="search" placeholder="Jump to a job, headhunter, person or question…" aria-label="Quick open"><div class="hqlist" role="listbox"></div><div class="hqhint"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</div></div>`;
+  wrap.innerHTML = `<div class="hqscrim"></div><div class="hqbox" role="dialog" aria-label="Quick open"><input type="search" placeholder="Jump to a job, ${esc(SECTIONS.hunters.noun)}, ${esc(SECTIONS.people.noun)} or question…" aria-label="Quick open"><div class="hqlist" role="listbox"></div><div class="hqhint"><kbd>↑</kbd><kbd>↓</kbd> choose · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</div></div>`;
   document.body.append(wrap);
   quickOpen = wrap;
   const inp = $q("input", wrap),
@@ -115,7 +116,7 @@ function openQuick() {
       items = [
         {
           note: words.length
-            ? `No job, headhunter, person or question matches “${inp.value.trim()}”. Open a guide:`
+            ? `No job, ${SECTIONS.hunters.noun}, ${SECTIONS.people.noun} or question matches “${inp.value.trim()}”. Open a guide:`
             : "Type a name or a question.",
         },
         ...fallbacks(),
@@ -125,7 +126,7 @@ function openQuick() {
       .map((a, i) =>
         a.note
           ? `<div class="hqi note" data-i="${i}">${esc(a.note)}</div>`
-          : `<div class="hqi${i === sel ? " on" : ""}" role="option" data-i="${i}"><b>${esc(a.title)}</b><span>${esc(a.sub)}</span><small>${a.lib ? "" : esc(a.sec === "jobs" ? "Job" : a.sec === "hunters" ? "Headhunter" : "Person") + " · "}<b class="hql">${esc(a.lane)}</b>${a.call ? " · 📞 " + esc(a.call) : ""}</small></div>`,
+          : `<div class="hqi${i === sel ? " on" : ""}" role="option" data-i="${i}"><b>${esc(a.title)}</b><span>${esc(a.sub)}</span><small>${a.lib ? "" : esc(a.sec === "jobs" ? "Job" : upFirst(SECTIONS[a.sec].noun)) + " · "}<b class="hql">${esc(a.lane)}</b>${a.call ? " · 📞 " + esc(a.call) : ""}</small></div>`,
       )
       .join("");
   }

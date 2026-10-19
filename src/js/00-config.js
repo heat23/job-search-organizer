@@ -58,6 +58,12 @@ const DEFAULT_CONFIG = {
     hunters: { lanes: ["contacted"], days: 30, close: "paused", label: "Move to Not now" },
     people: { lanes: ["asked"], days: 21, close: "noreply", label: "Mark no reply" },
   },
+  /* Names of the Headhunters and People tabs: `label` on the tab, `short` on narrow windows, `noun` for one card
+     ("+ Add headhunter"). Rename them to fit how you search, e.g. { label: "Recruiters", short: "Recruiters", noun: "recruiter" }. */
+  sections: {
+    hunters: { label: "Headhunters", short: "Hunters", noun: "headhunter" },
+    people: { label: "People", short: "People", noun: "person" },
+  },
   closedReasons: ["Rejected", "Withdrew", "Posting closed", "No reply", "Took another offer"],
   callTypes: ["Recruiter screen", "Hiring manager", "Panel", "Onsite", "Headhunter call", "Other"],
   /* The checklist shown on the Headhunters tab (records live in the `plan` collection). */
