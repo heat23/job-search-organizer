@@ -1,17 +1,27 @@
 /* Prep sheets, the notes pad, quick open and the Prep library. */
+/* Same theme rules as board.css: the system setting, unless data-theme="light" or "dark" is set on <html>. */
 :root {
   --ex: #6b5b95;
   --note: #fffceb;
   --todo: #b7791f;
   --flash: #fff1b8;
+  --ask: #eef3fd;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --ex: #b9a7e6;
     --note: #23211a;
     --todo: #e0a640;
     --flash: #4a4222;
+    --ask: #1d2740;
   }
+}
+:root[data-theme="dark"] {
+  --ex: #b9a7e6;
+  --note: #23211a;
+  --todo: #e0a640;
+  --flash: #4a4222;
+  --ask: #1d2740;
 }
 .tag.hcall {
   background: var(--warn-bg);
@@ -171,6 +181,18 @@ details.mine > summary {
   cursor: pointer;
   color: var(--muted);
   font-size: 13px;
+}
+/* "Their answer" ({.ask} on a prep sheet): open from the start, with a light highlight */
+details.mine.ask {
+  background: var(--ask);
+  border-left: 3px solid var(--accent);
+}
+details.mine.ask > summary {
+  color: var(--ink);
+  font-weight: 600;
+}
+details.mine.ask textarea {
+  min-height: 80px;
 }
 details.mine textarea {
   width: 100%;
@@ -600,6 +622,9 @@ body.blurpay:not(.showpay) .pay {
   .pad textarea {
     min-height: 0;
   }
+  details.mine textarea {
+    min-height: 64px;
+  }
   .pwhere {
     display: none;
   }
@@ -901,6 +926,10 @@ a.hit span {
 }
 .pleft.cuesonly .hq.open h4::after {
   content: "  ▾";
+}
+/* a "Their answer" question with no answer of yours has nothing to show */
+.pleft.cuesonly .hq:has(> details.mine.ask):not(:has(blockquote.say)) h4::after {
+  content: none;
 }
 .hqi .hql {
   font-weight: 600;

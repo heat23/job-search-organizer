@@ -1,10 +1,11 @@
 /* ================= Markdown for guides and prep sheets =================
    A small subset, plus four markers:
-     ✎  an answer you haven't confirmed yet (shows a "My version" box in the Library)
+     ✎  an answer you haven't confirmed yet (shows a "My version" box in guides and prep sheets)
      ☐  a fact you still need to find out
      *<…>*  an example answer: shown in a different color, left out when you copy
      ::: fold Title … :::  a collapsible block ("::: fold + Title" starts open)
      {.pay} at the end of a ## or ### heading marks a pay section (optionally blurred until you press H)
+     {.ask} anywhere in a ### heading of a prep sheet adds an open "Their answer" box (stripped everywhere else)
    Structure: "# Title", "## Section" (a card), "### Question" (a block inside the card). */
 const $q = (s, r) => (r || document).querySelector(s),
   $qa = (s, r) => [...(r || document).querySelectorAll(s)];
@@ -135,6 +136,12 @@ function blocks(lines) {
   flush();
   return h;
 }
+const ASK_RE = /\{\.ask\}/;
+const stripAsk = (t) =>
+  String(t)
+    .replace(/\s*\{\.ask\}\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 /* A doc = optional front matter, "# title", "## sections" (cards), "### questions" (blocks).
    With `split: bold` in the front matter, a whole-line **bold** also starts a question (for long answer docs). */
 function parse(md, opts) {
@@ -163,7 +170,7 @@ function parse(md, opts) {
       continue;
     }
     if (/^## /.test(l)) {
-      let t = l.slice(3).trim();
+      let t = stripAsk(l.slice(3).trim());
       const pay = /\{\.pay\}\s*$/.test(t);
       t = t.replace(/\s*\{\.pay\}\s*$/, "");
       cur = { title: t, pay, pre: [], qs: [] };
@@ -173,9 +180,11 @@ function parse(md, opts) {
     }
     if (/^### /.test(l) && cur) {
       let qt = l.slice(4).trim();
+      const qask = ASK_RE.test(qt);
+      qt = stripAsk(qt);
       const qpay = /\{\.pay\}\s*$/.test(qt);
       qt = qt.replace(/\s*\{\.pay\}\s*$/, "");
-      q = { title: qt, lines: [], sub: !!opts.splitBold, pay: qpay };
+      q = { title: qt, lines: [], sub: !!opts.splitBold, pay: qpay, ask: qask };
       cur.qs.push(q);
       continue;
     }
@@ -195,6 +204,11 @@ const COPY =
 const PAYNOTE = () => (CONFIG.blurPay ? '<span class="paynote">Pay · press H to show</span>' : "");
 const MINE = (k) =>
   `<details class="mine" data-k="${esc(k)}"><summary>My version</summary><textarea rows="4" placeholder="Write your own answer here. It saves to Library › My_answers.md."></textarea></details>`;
+/* {.ask} on a prep sheet question: a box for what THEY answered, open from the start (same file, same saving) */
+const ASKBOX = (k) =>
+  `<details class="mine ask" data-k="${esc(k)}" data-label="Their answer" open><summary>Their answer</summary><textarea rows="3" placeholder="Type what they said. It saves to Library › My_answers.md."></textarea></details>`;
+/* opts.mineKey turns on the answer boxes (saved as "<mineKey>::<question>"); opts.ask turns {.ask} questions into
+   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped). */
 function renderDoc(md, prefix, opts) {
   opts = opts || {};
   const d = parse(md, opts);
@@ -214,7 +228,13 @@ function renderDoc(md, prefix, opts) {
     h += `<section class="hs${s.pay ? " pay" : ""}" id="${id}" data-title="${esc(s.title)}"><h3 class="hs-h"><span>${inline(s.title)}</span>${s.pay ? PAYNOTE() : ""}${COPY}</h3>${blocks(s.pre)}`;
     if (!s.qs.length && hasMine(s.title)) h += MINE(opts.mineKey + "::" + normK(s.title));
     for (const qq of s.qs)
-      h += `<div class="hq${qq.sub ? " sub" : ""}${qq.pay ? " pay" : ""}" id="${sid(qq.title)}"><h4><span>${inline(qq.title)}</span>${COPY}</h4>${blocks(qq.lines)}${hasMine(qq.title) ? MINE(opts.mineKey + "::" + normK(qq.title)) : ""}</div>`;
+      h += `<div class="hq${qq.sub ? " sub" : ""}${qq.pay ? " pay" : ""}" id="${sid(qq.title)}"><h4><span>${inline(qq.title)}</span>${COPY}</h4>${blocks(qq.lines)}${
+        qq.ask && opts.ask && opts.mineKey
+          ? ASKBOX(opts.mineKey + "::" + normK(qq.title))
+          : hasMine(qq.title)
+            ? MINE(opts.mineKey + "::" + normK(qq.title))
+            : ""
+      }</div>`;
     h += `</section>`;
   }
   if (!d.secs.length && h)

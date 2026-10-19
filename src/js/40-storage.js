@@ -6,7 +6,8 @@ const FS_OK = typeof window.showDirectoryPicker === "function";
 const VIEW_ONLY = !FS_OK;
 if (VIEW_ONLY) document.documentElement.classList.add("viewonly");
 let filing = false,
-  fileAgain = false;
+  fileAgain = false,
+  fileOnClose = false;
 let dirHandle = null,
   canWrite = false,
   saveTimer = null,

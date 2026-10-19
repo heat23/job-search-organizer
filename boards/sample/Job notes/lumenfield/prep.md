@@ -40,6 +40,10 @@ asks: Design and own idempotent payment APIs | Bring p99 latency down and keep i
 
 > A teammate wanted to add a cache in front of a slow query. I suggested fixing the query first; we agreed to measure both. The index fix got us most of the way, so we skipped the cache and avoided a new failure mode.
 
+### Why are you looking to leave your current team? ✎
+
+> *<example answer: I've done my best work on the checkout API, and I want to go deeper on payments than my current team's roadmap allows.>*
+
 ## Gaps they may probe
 
 - **No Java in production.** Bridge: you've written Go and Kotlin; the concurrency and testing habits carry over, and you've read their open-source Java client.
@@ -60,6 +64,10 @@ asks: Design and own idempotent payment APIs | Bring p99 latency down and keep i
 1. Which parts of the payment flow does the team own today, and which belong to other teams?
 2. How do you decide what goes on the roadmap versus the reliability backlog?
 3. What would make this hire a clear success after a year?
+
+### Who would I report to, and how big is the team? {.ask}
+
+### What are the next steps, and when should I expect to hear back? {.ask}
 
 ## What you sent them
 

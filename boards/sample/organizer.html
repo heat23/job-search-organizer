@@ -1123,19 +1123,29 @@ details.waiting .wrow .why {
 }
 
 /* Prep sheets, the notes pad, quick open and the Prep library. */
+/* Same theme rules as board.css: the system setting, unless data-theme="light" or "dark" is set on <html>. */
 :root {
   --ex: #6b5b95;
   --note: #fffceb;
   --todo: #b7791f;
   --flash: #fff1b8;
+  --ask: #eef3fd;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --ex: #b9a7e6;
     --note: #23211a;
     --todo: #e0a640;
     --flash: #4a4222;
+    --ask: #1d2740;
   }
+}
+:root[data-theme="dark"] {
+  --ex: #b9a7e6;
+  --note: #23211a;
+  --todo: #e0a640;
+  --flash: #4a4222;
+  --ask: #1d2740;
 }
 .tag.hcall {
   background: var(--warn-bg);
@@ -1295,6 +1305,18 @@ details.mine > summary {
   cursor: pointer;
   color: var(--muted);
   font-size: 13px;
+}
+/* "Their answer" ({.ask} on a prep sheet): open from the start, with a light highlight */
+details.mine.ask {
+  background: var(--ask);
+  border-left: 3px solid var(--accent);
+}
+details.mine.ask > summary {
+  color: var(--ink);
+  font-weight: 600;
+}
+details.mine.ask textarea {
+  min-height: 80px;
 }
 details.mine textarea {
   width: 100%;
@@ -1724,6 +1746,9 @@ body.blurpay:not(.showpay) .pay {
   .pad textarea {
     min-height: 0;
   }
+  details.mine textarea {
+    min-height: 64px;
+  }
   .pwhere {
     display: none;
   }
@@ -2025,6 +2050,10 @@ a.hit span {
 }
 .pleft.cuesonly .hq.open h4::after {
   content: "  ▾";
+}
+/* a "Their answer" question with no answer of yours has nothing to show */
+.pleft.cuesonly .hq:has(> details.mine.ask):not(:has(blockquote.say)) h4::after {
+  content: none;
 }
 .hqi .hql {
   font-weight: 600;
@@ -2697,7 +2726,8 @@ const FS_OK = typeof window.showDirectoryPicker === "function";
 const VIEW_ONLY = !FS_OK;
 if (VIEW_ONLY) document.documentElement.classList.add("viewonly");
 let filing = false,
-  fileAgain = false;
+  fileAgain = false,
+  fileOnClose = false;
 let dirHandle = null,
   canWrite = false,
   saveTimer = null,
@@ -4783,6 +4813,11 @@ function closeDrawer() {
   openRef = null;
   $("#drawerRoot").textContent = "";
   render();
+  /* changes picked up from the folder while the panel was open: file the moved job folders now */
+  if (fileOnClose) {
+    fileOnClose = false;
+    setTimeout(fileJobs, 50);
+  }
   if (back && get(back.sec, back.id)) {
     openDrawer(back.sec, back.id);
     return;
@@ -4871,7 +4906,8 @@ function openKeys() {
       "In a prep sheet",
       `The cursor starts in your notes. Esc, then 1–9 jump to a section · ${sheetKeys} · N back to notes · / filter${CONFIG.blurPay ? " · H show pay" : ""} · Esc again closes`,
     ],
-    ["/", "Search this tab"],
+    ["/", "Search this tab (on Next up: quick open)"],
+    ...(CONFIG.blurPay ? [["H", "In the Prep library and prep sheets: show or blur pay sections"]] : []),
     ["N", "Add a job, headhunter or person"],
     ["Enter", "Open the selected card"],
     ["Esc", "Close a panel or clear search"],
@@ -5085,11 +5121,12 @@ function openAdd(secArg, prefill, opts) {
 /* ---- 80-markdown.js ---- */
 /* ================= Markdown for guides and prep sheets =================
    A small subset, plus four markers:
-     ✎  an answer you haven't confirmed yet (shows a "My version" box in the Library)
+     ✎  an answer you haven't confirmed yet (shows a "My version" box in guides and prep sheets)
      ☐  a fact you still need to find out
      *<…>*  an example answer: shown in a different color, left out when you copy
      ::: fold Title … :::  a collapsible block ("::: fold + Title" starts open)
      {.pay} at the end of a ## or ### heading marks a pay section (optionally blurred until you press H)
+     {.ask} anywhere in a ### heading of a prep sheet adds an open "Their answer" box (stripped everywhere else)
    Structure: "# Title", "## Section" (a card), "### Question" (a block inside the card). */
 const $q = (s, r) => (r || document).querySelector(s),
   $qa = (s, r) => [...(r || document).querySelectorAll(s)];
@@ -5220,6 +5257,12 @@ function blocks(lines) {
   flush();
   return h;
 }
+const ASK_RE = /\{\.ask\}/;
+const stripAsk = (t) =>
+  String(t)
+    .replace(/\s*\{\.ask\}\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 /* A doc = optional front matter, "# title", "## sections" (cards), "### questions" (blocks).
    With `split: bold` in the front matter, a whole-line **bold** also starts a question (for long answer docs). */
 function parse(md, opts) {
@@ -5248,7 +5291,7 @@ function parse(md, opts) {
       continue;
     }
     if (/^## /.test(l)) {
-      let t = l.slice(3).trim();
+      let t = stripAsk(l.slice(3).trim());
       const pay = /\{\.pay\}\s*$/.test(t);
       t = t.replace(/\s*\{\.pay\}\s*$/, "");
       cur = { title: t, pay, pre: [], qs: [] };
@@ -5258,9 +5301,11 @@ function parse(md, opts) {
     }
     if (/^### /.test(l) && cur) {
       let qt = l.slice(4).trim();
+      const qask = ASK_RE.test(qt);
+      qt = stripAsk(qt);
       const qpay = /\{\.pay\}\s*$/.test(qt);
       qt = qt.replace(/\s*\{\.pay\}\s*$/, "");
-      q = { title: qt, lines: [], sub: !!opts.splitBold, pay: qpay };
+      q = { title: qt, lines: [], sub: !!opts.splitBold, pay: qpay, ask: qask };
       cur.qs.push(q);
       continue;
     }
@@ -5280,6 +5325,11 @@ const COPY =
 const PAYNOTE = () => (CONFIG.blurPay ? '<span class="paynote">Pay · press H to show</span>' : "");
 const MINE = (k) =>
   `<details class="mine" data-k="${esc(k)}"><summary>My version</summary><textarea rows="4" placeholder="Write your own answer here. It saves to Library › My_answers.md."></textarea></details>`;
+/* {.ask} on a prep sheet question: a box for what THEY answered, open from the start (same file, same saving) */
+const ASKBOX = (k) =>
+  `<details class="mine ask" data-k="${esc(k)}" data-label="Their answer" open><summary>Their answer</summary><textarea rows="3" placeholder="Type what they said. It saves to Library › My_answers.md."></textarea></details>`;
+/* opts.mineKey turns on the answer boxes (saved as "<mineKey>::<question>"); opts.ask turns {.ask} questions into
+   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped). */
 function renderDoc(md, prefix, opts) {
   opts = opts || {};
   const d = parse(md, opts);
@@ -5299,7 +5349,13 @@ function renderDoc(md, prefix, opts) {
     h += `<section class="hs${s.pay ? " pay" : ""}" id="${id}" data-title="${esc(s.title)}"><h3 class="hs-h"><span>${inline(s.title)}</span>${s.pay ? PAYNOTE() : ""}${COPY}</h3>${blocks(s.pre)}`;
     if (!s.qs.length && hasMine(s.title)) h += MINE(opts.mineKey + "::" + normK(s.title));
     for (const qq of s.qs)
-      h += `<div class="hq${qq.sub ? " sub" : ""}${qq.pay ? " pay" : ""}" id="${sid(qq.title)}"><h4><span>${inline(qq.title)}</span>${COPY}</h4>${blocks(qq.lines)}${hasMine(qq.title) ? MINE(opts.mineKey + "::" + normK(qq.title)) : ""}</div>`;
+      h += `<div class="hq${qq.sub ? " sub" : ""}${qq.pay ? " pay" : ""}" id="${sid(qq.title)}"><h4><span>${inline(qq.title)}</span>${COPY}</h4>${blocks(qq.lines)}${
+        qq.ask && opts.ask && opts.mineKey
+          ? ASKBOX(opts.mineKey + "::" + normK(qq.title))
+          : hasMine(qq.title)
+            ? MINE(opts.mineKey + "::" + normK(qq.title))
+            : ""
+      }</div>`;
     h += `</section>`;
   }
   if (!d.secs.length && h)
@@ -5592,14 +5648,16 @@ async function refreshDocs(force) {
     }
   return changed;
 }
-/* New or changed prep sheets written into the folder since the bundle was made. */
+/* New or changed prep sheets written into the folder since the bundle was made.
+   opts.quiet: don't redraw the board (a panel is open); opts.skip: a job whose open sheet checks its own prep.md. */
 let prepScanned = false;
 const fileSeen = {};
-async function scanPrep() {
+async function scanPrep(opts) {
+  opts = opts || {};
   if (!FS.ok()) return false;
   let changed = false;
   for (const [nm, kind] of await FS.list("Job notes")) {
-    if (kind !== "directory" || nm === "hunters") continue;
+    if (kind !== "directory" || nm === "hunters" || nm === opts.skip) continue;
     const r = await FS.read(`Job notes/${nm}/prep.md`);
     if (r && validPrep(r.text) && r.text !== PREPTXT[nm]) {
       PREPTXT[nm] = r.text;
@@ -5608,7 +5666,7 @@ async function scanPrep() {
     }
   }
   prepScanned = true;
-  if (changed || Object.keys(PREPTXT).length === 0) {
+  if (!opts.quiet && (changed || Object.keys(PREPTXT).length === 0)) {
     try {
       render();
     } catch (e) {}
@@ -5618,8 +5676,9 @@ async function scanPrep() {
 
 /* ---- 82-my-answers.js ---- */
 /* ================= "My version" answers (Library/My_answers.md, written only by this page) =================
-   Every ✎ question in a guide gets a box for your own wording. Answers are kept in this browser at once
-   and written to the file about a second after you stop typing. */
+   Every ✎ question in a guide or prep sheet gets a box for your own wording, and every {.ask} question on a prep
+   sheet a "Their answer" box. Prep sheet answers are keyed "prep:<job id>::<question>". Answers are kept in this
+   browser at once and written to the file about a second after you stop typing. */
 const MYLK = "myAnswers";
 let MY = {},
   myLoaded = false,
@@ -5635,7 +5694,7 @@ try {
   MY = {};
 }
 const myToMd = () =>
-  "# My answers\nYour own versions of the example questions in the Prep library. The page reads and writes this file.\n\n" +
+  "# My answers\nYour own versions of the example questions in the Prep library, and the answers you typed on prep sheets. The page reads and writes this file.\n\n" +
   Object.entries(MY)
     .filter(([, v]) => v && v.trim())
     .map(([k, v]) => `## ${k}\n${v.trim()}\n`)
@@ -5697,22 +5756,26 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") myFlush();
 });
 window.addEventListener("pagehide", myFlush);
+const mineLabel = (det, filled) => (det.dataset.label || "My version") + (filled ? " ✓" : "");
 function fillMine(det) {
   const k = det.dataset.k;
   const ta = det.querySelector("textarea");
   if (ta && document.activeElement !== ta) ta.value = MY[k] || "";
-  det.querySelector("summary").textContent = MY[k] && MY[k].trim() ? "My version ✓" : "My version";
+  const filled = !!(MY[k] && MY[k].trim());
+  det.querySelector("summary").textContent = mineLabel(det, filled);
+  /* a box opens when it gets an answer (also one read from the file after the page opened); you can fold it again */
+  if (filled && !det.dataset.filled) det.open = true;
+  det.dataset.filled = filled ? "1" : "";
 }
 function wireMine(root) {
   $qa("details.mine", root).forEach((det) => {
     fillMine(det);
-    if (MY[det.dataset.k]) det.open = true;
     const ta = det.querySelector("textarea");
     if (ta.__w) return;
     ta.__w = 1;
     ta.addEventListener("input", () => {
       MY[det.dataset.k] = ta.value;
-      det.querySelector("summary").textContent = ta.value.trim() ? "My version ✓" : "My version";
+      det.querySelector("summary").textContent = mineLabel(det, ta.value.trim());
       mySave();
     });
   });
@@ -6160,10 +6223,10 @@ function renderUpcoming(v) {
     );
   v.append(box);
 }
-/* Tags on board cards: a booked call, or a job in play without a prep sheet */
+/* Tags on board cards: a booked call (not on a closed card), or a job in play without a prep sheet */
 function cardTags(sec, id, x) {
   const out = [];
-  if (callLive(x))
+  if (callLive(x) && !laneOf(sec, laneKey(sec, x)).done)
     out.push(
       el("span", {
         class: "tag hcall",
@@ -6189,8 +6252,8 @@ function cardTags(sec, id, x) {
 
 /* ---- 85-prep-sheet.js ---- */
 /* ================= the prep sheet =================
-   A job in play (Applied through Offer, or with a call booked) and an active headhunter open in a wide panel:
-   talking points on the left, your notes pad on the right, the call and stage in the header.
+   A job in play (Applied through Offer, with a call booked, or marked sheet: true) and an active headhunter open in a
+   wide panel: talking points on the left, your notes pad on the right, the call and stage in the header.
    It is built from the plain card panel that openDrawer made: the same fields are moved, not copied. */
 const sheetOverride = {},
   scrollMem = {};
@@ -6275,7 +6338,8 @@ function enhance(sec, d, id, x, keep) {
   const ln = laneKey(sec, x);
   const hasPrep = sec === "jobs" && validPrep(PREPTXT[id]);
   const active = sec === "jobs" ? ACTIVE_LANES.includes(ln) : sec === "hunters" && !laneOf("hunters", ln).done;
-  const useSheet = active || callLive(x) || (sec === "jobs" && sheetOverride[id]);
+  /* sheet: true (set by the assistant) opens a job in any other lane straight to its prep sheet, once prep.md exists */
+  const useSheet = active || callLive(x) || (sec === "jobs" && (sheetOverride[id] || (x.sheet === true && hasPrep)));
   if (!useSheet) {
     if (hasPrep) {
       const btn = el("button", {
@@ -6368,8 +6432,11 @@ function enhance(sec, d, id, x, keep) {
     const jd = isJob ? JOBDOCS[id] || {} : {};
     let lh = "";
     nav = [];
+    /* answer boxes: ✎ questions get "My version", {.ask} questions "Their answer" (Library › My_answers.md, "prep:<id>::…") */
     const dd =
-      isJob && validPrep(PREPTXT[id]) ? renderDoc(PREPTXT[id], "p-" + String(id).replace(/[^\w-]/g, "_")) : null;
+      isJob && validPrep(PREPTXT[id])
+        ? renderDoc(PREPTXT[id], "p-" + String(id).replace(/[^\w-]/g, "_"), { mineKey: "prep:" + id, ask: true })
+        : null;
     if (isJob) {
       if (dd) {
         let body = dd.html;
@@ -6403,6 +6470,7 @@ function enhance(sec, d, id, x, keep) {
     left.innerHTML = lh;
     left.prepend(bar);
     wireCopy(left);
+    wireMine(left);
     left.classList.toggle("cuesonly", cuesOnly);
     const buttons = CONFIG.library.sheetButtons.filter((b) => DOCS[b.doc]);
     pills.innerHTML =
@@ -6589,9 +6657,23 @@ function enhance(sec, d, id, x, keep) {
     let pendingText = null;
     const rebuild = () => {
       const keepY = leftWrap.scrollTop;
+      /* an answer box you are typing in keeps the cursor (its text is already saved) */
+      const a = document.activeElement;
+      const box =
+        a && a.matches("details.mine textarea") && left.contains(a) ? a.closest("details.mine").dataset.k : null;
+      const caret = box ? a.selectionStart : 0;
       build();
       leftWrap.scrollTop = keepY;
       if (libOpenInSheet) showLib(libOpenInSheet);
+      const again = box && $qa("details.mine", left).find((n) => n.dataset.k === box);
+      if (again) {
+        const ta = again.querySelector("textarea");
+        again.open = true;
+        ta.focus({ preventScroll: true });
+        try {
+          ta.setSelectionRange(caret, caret);
+        } catch (e) {}
+      }
     };
     refreshDocs().then((ch) => {
       if (ch && d.isConnected) rebuild();
@@ -7369,10 +7451,16 @@ const startTimer = setInterval(() => {
     setInterval(startup, 20 * 60 * 1000);
   }
 }, 2500);
-/* Pick up changes another tool (a script, an AI assistant) made while this page was open: new prep sheets, then the data file. */
+/* Pick up changes another tool (a script, an AI assistant) made while this page was open: new prep sheets, then the data file.
+   With a panel or prep sheet open, the changes are merged in the background: the panel and the notes pad stay as they are,
+   and the board is redrawn and job folders are filed when the panel closes. */
+const panelOpen = () => $("#drawerRoot").childNodes.length > 0;
 window.addEventListener("focus", async () => {
-  if (FS.ok() && !$("#drawerRoot").childNodes.length) await scanPrep();
-  if (dirHandle && canWrite && !writing && !$("#drawerRoot").childNodes.length) {
+  if (FS.ok())
+    await scanPrep(
+      panelOpen() ? { quiet: true, skip: openRef && openRef.sec === "jobs" ? openRef.id : null } : undefined,
+    );
+  if (dirHandle && canWrite && !writing) {
     const before = collectionsOnly(store);
     const r = await readFileInto();
     if (r === "bad") {
@@ -7386,9 +7474,15 @@ window.addEventListener("focus", async () => {
     }
     if (collectionsOnly(store) !== before) {
       persistLocal();
-      render();
-      /* a card moved by another tool gets its job folder filed by stage right away */
-      setTimeout(fileJobs, 50);
+      if (panelOpen()) {
+        fileOnClose = true;
+        refreshDrawerHead();
+        renderStatus();
+      } else {
+        render();
+        /* a card moved by another tool gets its job folder filed by stage right away */
+        setTimeout(fileJobs, 50);
+      }
     } else renderStatus();
     /* The file is missing something this browser has (a tool wrote back an older or partial copy): write it back. */
     if (r === "ok" && lastRaw && collectionsOnly(normalize(parseDataText(lastRaw))) !== collectionsOnly(store)) {

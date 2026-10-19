@@ -92,10 +92,16 @@ const startTimer = setInterval(() => {
     setInterval(startup, 20 * 60 * 1000);
   }
 }, 2500);
-/* Pick up changes another tool (a script, an AI assistant) made while this page was open: new prep sheets, then the data file. */
+/* Pick up changes another tool (a script, an AI assistant) made while this page was open: new prep sheets, then the data file.
+   With a panel or prep sheet open, the changes are merged in the background: the panel and the notes pad stay as they are,
+   and the board is redrawn and job folders are filed when the panel closes. */
+const panelOpen = () => $("#drawerRoot").childNodes.length > 0;
 window.addEventListener("focus", async () => {
-  if (FS.ok() && !$("#drawerRoot").childNodes.length) await scanPrep();
-  if (dirHandle && canWrite && !writing && !$("#drawerRoot").childNodes.length) {
+  if (FS.ok())
+    await scanPrep(
+      panelOpen() ? { quiet: true, skip: openRef && openRef.sec === "jobs" ? openRef.id : null } : undefined,
+    );
+  if (dirHandle && canWrite && !writing) {
     const before = collectionsOnly(store);
     const r = await readFileInto();
     if (r === "bad") {
@@ -109,9 +115,15 @@ window.addEventListener("focus", async () => {
     }
     if (collectionsOnly(store) !== before) {
       persistLocal();
-      render();
-      /* a card moved by another tool gets its job folder filed by stage right away */
-      setTimeout(fileJobs, 50);
+      if (panelOpen()) {
+        fileOnClose = true;
+        refreshDrawerHead();
+        renderStatus();
+      } else {
+        render();
+        /* a card moved by another tool gets its job folder filed by stage right away */
+        setTimeout(fileJobs, 50);
+      }
     } else renderStatus();
     /* The file is missing something this browser has (a tool wrote back an older or partial copy): write it back. */
     if (r === "ok" && lastRaw && collectionsOnly(normalize(parseDataText(lastRaw))) !== collectionsOnly(store)) {

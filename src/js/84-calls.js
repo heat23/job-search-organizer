@@ -184,10 +184,10 @@ function renderUpcoming(v) {
     );
   v.append(box);
 }
-/* Tags on board cards: a booked call, or a job in play without a prep sheet */
+/* Tags on board cards: a booked call (not on a closed card), or a job in play without a prep sheet */
 function cardTags(sec, id, x) {
   const out = [];
-  if (callLive(x))
+  if (callLive(x) && !laneOf(sec, laneKey(sec, x)).done)
     out.push(
       el("span", {
         class: "tag hcall",

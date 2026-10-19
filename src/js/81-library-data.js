@@ -134,14 +134,16 @@ async function refreshDocs(force) {
     }
   return changed;
 }
-/* New or changed prep sheets written into the folder since the bundle was made. */
+/* New or changed prep sheets written into the folder since the bundle was made.
+   opts.quiet: don't redraw the board (a panel is open); opts.skip: a job whose open sheet checks its own prep.md. */
 let prepScanned = false;
 const fileSeen = {};
-async function scanPrep() {
+async function scanPrep(opts) {
+  opts = opts || {};
   if (!FS.ok()) return false;
   let changed = false;
   for (const [nm, kind] of await FS.list("Job notes")) {
-    if (kind !== "directory" || nm === "hunters") continue;
+    if (kind !== "directory" || nm === "hunters" || nm === opts.skip) continue;
     const r = await FS.read(`Job notes/${nm}/prep.md`);
     if (r && validPrep(r.text) && r.text !== PREPTXT[nm]) {
       PREPTXT[nm] = r.text;
@@ -150,7 +152,7 @@ async function scanPrep() {
     }
   }
   prepScanned = true;
-  if (changed || Object.keys(PREPTXT).length === 0) {
+  if (!opts.quiet && (changed || Object.keys(PREPTXT).length === 0)) {
     try {
       render();
     } catch (e) {}

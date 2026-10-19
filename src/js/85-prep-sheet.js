@@ -1,6 +1,6 @@
 /* ================= the prep sheet =================
-   A job in play (Applied through Offer, or with a call booked) and an active headhunter open in a wide panel:
-   talking points on the left, your notes pad on the right, the call and stage in the header.
+   A job in play (Applied through Offer, with a call booked, or marked sheet: true) and an active headhunter open in a
+   wide panel: talking points on the left, your notes pad on the right, the call and stage in the header.
    It is built from the plain card panel that openDrawer made: the same fields are moved, not copied. */
 const sheetOverride = {},
   scrollMem = {};
@@ -85,7 +85,8 @@ function enhance(sec, d, id, x, keep) {
   const ln = laneKey(sec, x);
   const hasPrep = sec === "jobs" && validPrep(PREPTXT[id]);
   const active = sec === "jobs" ? ACTIVE_LANES.includes(ln) : sec === "hunters" && !laneOf("hunters", ln).done;
-  const useSheet = active || callLive(x) || (sec === "jobs" && sheetOverride[id]);
+  /* sheet: true (set by the assistant) opens a job in any other lane straight to its prep sheet, once prep.md exists */
+  const useSheet = active || callLive(x) || (sec === "jobs" && (sheetOverride[id] || (x.sheet === true && hasPrep)));
   if (!useSheet) {
     if (hasPrep) {
       const btn = el("button", {
@@ -178,8 +179,11 @@ function enhance(sec, d, id, x, keep) {
     const jd = isJob ? JOBDOCS[id] || {} : {};
     let lh = "";
     nav = [];
+    /* answer boxes: ✎ questions get "My version", {.ask} questions "Their answer" (Library › My_answers.md, "prep:<id>::…") */
     const dd =
-      isJob && validPrep(PREPTXT[id]) ? renderDoc(PREPTXT[id], "p-" + String(id).replace(/[^\w-]/g, "_")) : null;
+      isJob && validPrep(PREPTXT[id])
+        ? renderDoc(PREPTXT[id], "p-" + String(id).replace(/[^\w-]/g, "_"), { mineKey: "prep:" + id, ask: true })
+        : null;
     if (isJob) {
       if (dd) {
         let body = dd.html;
@@ -213,6 +217,7 @@ function enhance(sec, d, id, x, keep) {
     left.innerHTML = lh;
     left.prepend(bar);
     wireCopy(left);
+    wireMine(left);
     left.classList.toggle("cuesonly", cuesOnly);
     const buttons = CONFIG.library.sheetButtons.filter((b) => DOCS[b.doc]);
     pills.innerHTML =
@@ -399,9 +404,23 @@ function enhance(sec, d, id, x, keep) {
     let pendingText = null;
     const rebuild = () => {
       const keepY = leftWrap.scrollTop;
+      /* an answer box you are typing in keeps the cursor (its text is already saved) */
+      const a = document.activeElement;
+      const box =
+        a && a.matches("details.mine textarea") && left.contains(a) ? a.closest("details.mine").dataset.k : null;
+      const caret = box ? a.selectionStart : 0;
       build();
       leftWrap.scrollTop = keepY;
       if (libOpenInSheet) showLib(libOpenInSheet);
+      const again = box && $qa("details.mine", left).find((n) => n.dataset.k === box);
+      if (again) {
+        const ta = again.querySelector("textarea");
+        again.open = true;
+        ta.focus({ preventScroll: true });
+        try {
+          ta.setSelectionRange(caret, caret);
+        } catch (e) {}
+      }
     };
     refreshDocs().then((ch) => {
       if (ch && d.isConnected) rebuild();

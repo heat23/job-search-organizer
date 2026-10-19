@@ -405,6 +405,11 @@ function closeDrawer() {
   openRef = null;
   $("#drawerRoot").textContent = "";
   render();
+  /* changes picked up from the folder while the panel was open: file the moved job folders now */
+  if (fileOnClose) {
+    fileOnClose = false;
+    setTimeout(fileJobs, 50);
+  }
   if (back && get(back.sec, back.id)) {
     openDrawer(back.sec, back.id);
     return;
@@ -493,7 +498,8 @@ function openKeys() {
       "In a prep sheet",
       `The cursor starts in your notes. Esc, then 1–9 jump to a section · ${sheetKeys} · N back to notes · / filter${CONFIG.blurPay ? " · H show pay" : ""} · Esc again closes`,
     ],
-    ["/", "Search this tab"],
+    ["/", "Search this tab (on Next up: quick open)"],
+    ...(CONFIG.blurPay ? [["H", "In the Prep library and prep sheets: show or blur pay sections"]] : []),
     ["N", "Add a job, headhunter or person"],
     ["Enter", "Open the selected card"],
     ["Esc", "Close a panel or clear search"],

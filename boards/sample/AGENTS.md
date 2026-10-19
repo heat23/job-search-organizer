@@ -15,7 +15,7 @@ This folder is a job search board. The person keeps it up to date by asking you,
 
 Five collections, each an object of records keyed by id. Use a short, unique, lowercase id with letters, digits and `_` (for example `acme` or `acme_platform`).
 
-Dates: `followUp` is a local date `YYYY-MM-DD`. `callAt` is a local time `YYYY-MM-DDTHH:MM`. Other times (`createdAt`, `movedAt`, `appliedAt`, `updatedAt`) are ISO times in UTC with `Z`.
+Dates: `followUp` and `keepUntil` are local dates `YYYY-MM-DD`. `callAt` is a local time `YYYY-MM-DDTHH:MM`. Other times (`createdAt`, `movedAt`, `appliedAt`, `updatedAt`) are ISO times in UTC with `Z`.
 
 ### `jobs`
 
@@ -27,8 +27,13 @@ Dates: `followUp` is a local date `YYYY-MM-DD`. `callAt` is a local time `YYYY-M
 | `pay` | What the posting says about pay, as text. |
 | `resume`, `sentResume` | Which résumé version was tailored and which was sent (for example `v3`). |
 | `folder` | Path of the job's document folder, for example `1 - To apply/Acme - Staff Engineer`. The page keeps it current. |
+| `noResume`, `noLetter` | `true` when the job's package has no tailored résumé or no cover letter (the card stops asking for one). |
+| `resumeFile`, `letterFile` | File names inside the folder when they differ from the names in the settings (default `Resume.pdf` and `Cover_Letter.pdf`). |
 | `pinned`, `pinnedAt` | Starred: shown first under To apply and on Next up. |
 | `longShot` | A stretch role, listed below the others. |
+| `order` | Position among the other unstarred cards in To apply (lower first). |
+| `sheet` | `true` opens the job straight to its prep sheet even before it is applied to (for example a role a headhunter brought, with a call coming). Needs `prep.md`; without one the plain panel opens. |
+| `keepUntil` | No "no change in N days" nudge before this date. The page sets it when the person logs a follow-up or chooses Keep waiting. |
 | `referralId` | Id of the person in `people` who referred you. |
 | `closedReason` | Why it closed: `Rejected`, `Withdrew`, `Posting closed`, `No reply` or `Took another offer`. |
 | `callAt`, `callType`, `callWith`, `callLink` | The next booked call. `callType` is `Recruiter screen`, `Hiring manager`, `Panel`, `Onsite`, `Headhunter call` or `Other`. |
@@ -38,7 +43,7 @@ Job stages (`lane`), with the default follow-up in days: `todo` (To apply), `app
 
 ### `hunters` (headhunters and agency recruiters)
 
-`name`, `firm`, `practice`, `tier`, `url` (their candidate form or profile), `firmUrl`, `notes`, `submittedTo` (roles they submitted the person to, as text), `followUp`, `callAt`/`callType`/`callWith`/`callLink`.
+`name`, `firm`, `practice`, `tier`, `url` (their candidate form or profile), `linkLabel` (the text of the `url` link, default "Open ↗"), `firmUrl`, `notes`, `submittedTo` (roles they submitted the person to, as text), `followUp`, `callAt`/`callType`/`callWith`/`callLink`.
 Stages: `todo` (To register), `registered`, `contacted` (10), `talking` (30), `presented` (Submitted me, 7), `paused` (Not now).
 
 ### `people` (referrals and contacts)
@@ -48,11 +53,11 @@ Stages: `todo` (To ask), `asked` (7), `talking` (14), `helped`, `noreply`.
 
 ### `todos`
 
-`text`, `detail`, `group` (`first` or `later`), `from` (`assistant`), `done` (true or false), `doneAt`, `order`.
+`text`, `detail`, `url` and `urlLabel` (a link shown with the detail, default label "Open ↗"), `group` (`first` or `later`), `done` (true or false), `doneAt`, `order`. The page sets `from: "you"` on to-dos the person adds ("Added by you"); leave `from` out on yours. The **New** tag comes from `changedBy`.
 
 ### `plan`
 
-The checklist on the Headhunters tab: `week` (1 to 4), `order`, `text`, `done`, `doneAt`.
+The checklist on the Headhunters tab: `week` (1 to 4), `order`, `text`, `done`, `doneAt`. A step with `auto` ticks itself: `"hunters_registered"` (every headhunter with a `tier` is past To register) or `"people10"` (ten people on the board).
 
 The page's settings file, `organizer.config.js`, can rename the stages and change the follow-up days. The ids above never change.
 
@@ -62,8 +67,16 @@ Set `lane` and `movedAt`, and a new `followUp` (today plus the stage's days) unl
 
 - **Applied:** also set `appliedAt`, and `sentResume` if you know which version was sent.
 - **Call booked:** set `callAt`, `callType`, `callWith`, `callLink`, move a recruiter call to `screen` and later rounds to `interview`, and set `followUp` to the day after the call.
-- **Closed:** set `closedReason` and clear `followUp` (`null`) and the call fields.
+- **Closed:** set `closedReason` and clear `followUp` (`null`). A closed card never shows its call, so clearing the call fields is optional.
 - **Offer:** `lane: "offer"`, with a short summary in `notes`.
+
+## A new job's résumé folder
+
+When the person asks you to set up the documents for a job (for example a tailored résumé you wrote):
+
+1. Create `1 - To apply/<Company> - <Role>/` (no `/` in the name; use the `stageFolders.todo` name if `organizer.config.js` changes it), even if the job is already further along.
+2. Save the files there under the names in `organizer.config.js` (`files.resume` and `files.coverLetter`, default `Resume.pdf` and `Cover_Letter.pdf`), or set `resumeFile` / `letterFile` on the job. Set `noLetter: true` if there is no cover letter.
+3. Set the job's `folder` to that path, with a new `updatedAt`. The page moves the folder to the job's stage folder on its own.
 
 ## Prep sheets and notes
 
@@ -97,9 +110,11 @@ asks: First thing the posting asks for | Second | Third
 
 ## Gaps they may probe
 ## Questions to ask them
+1. A question for the interviewer.
+### Who would I report to? {.ask}
 ## Pay {.pay}
 ```
 
-Markup: `✎` marks an answer the person should confirm and adds a "My version" box. `☐` marks a fact to find out. `*<...>*` marks example text that is left out when copied. `::: fold Title` … `:::` makes a block that opens and closes. `{.pay}` on a heading lets the person blur that section when sharing their screen. Use only facts from the person's résumé, the posting and what they tell you. Never invent achievements or numbers.
+Markup: `✎` marks an answer the person should confirm and adds a "My version" box. `{.ask}` on a `###` question in a prep sheet adds an open "Their answer" box where the person types what the interviewer said (use it for questions the person asks them). Both boxes save to `Library/My_answers.md` under `## prep:<job id>::<question>`; never write them yourself, but read them when asked what was said. `☐` marks a fact to find out. `*<...>*` marks example text that is left out when copied. `::: fold Title` … `:::` makes a block that opens and closes. `{.pay}` on a heading lets the person blur that section when sharing their screen. Use only facts from the person's résumé, the posting and what they tell you. Never invent achievements or numbers.
 
-Guides for every job (call scripts, a cheat sheet) live in `Library/<Group>/<NN>_<Title>.md` and use the same markup.
+Guides for every job (call scripts, a cheat sheet) live in `Library/<Group>/<NN>_<Title>.md` and use the same markup, except `{.ask}`, which only adds a box in a prep sheet (in a guide it is ignored).

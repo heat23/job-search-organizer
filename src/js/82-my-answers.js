@@ -1,6 +1,7 @@
 /* ================= "My version" answers (Library/My_answers.md, written only by this page) =================
-   Every ✎ question in a guide gets a box for your own wording. Answers are kept in this browser at once
-   and written to the file about a second after you stop typing. */
+   Every ✎ question in a guide or prep sheet gets a box for your own wording, and every {.ask} question on a prep
+   sheet a "Their answer" box. Prep sheet answers are keyed "prep:<job id>::<question>". Answers are kept in this
+   browser at once and written to the file about a second after you stop typing. */
 const MYLK = "myAnswers";
 let MY = {},
   myLoaded = false,
@@ -16,7 +17,7 @@ try {
   MY = {};
 }
 const myToMd = () =>
-  "# My answers\nYour own versions of the example questions in the Prep library. The page reads and writes this file.\n\n" +
+  "# My answers\nYour own versions of the example questions in the Prep library, and the answers you typed on prep sheets. The page reads and writes this file.\n\n" +
   Object.entries(MY)
     .filter(([, v]) => v && v.trim())
     .map(([k, v]) => `## ${k}\n${v.trim()}\n`)
@@ -78,22 +79,26 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") myFlush();
 });
 window.addEventListener("pagehide", myFlush);
+const mineLabel = (det, filled) => (det.dataset.label || "My version") + (filled ? " ✓" : "");
 function fillMine(det) {
   const k = det.dataset.k;
   const ta = det.querySelector("textarea");
   if (ta && document.activeElement !== ta) ta.value = MY[k] || "";
-  det.querySelector("summary").textContent = MY[k] && MY[k].trim() ? "My version ✓" : "My version";
+  const filled = !!(MY[k] && MY[k].trim());
+  det.querySelector("summary").textContent = mineLabel(det, filled);
+  /* a box opens when it gets an answer (also one read from the file after the page opened); you can fold it again */
+  if (filled && !det.dataset.filled) det.open = true;
+  det.dataset.filled = filled ? "1" : "";
 }
 function wireMine(root) {
   $qa("details.mine", root).forEach((det) => {
     fillMine(det);
-    if (MY[det.dataset.k]) det.open = true;
     const ta = det.querySelector("textarea");
     if (ta.__w) return;
     ta.__w = 1;
     ta.addEventListener("input", () => {
       MY[det.dataset.k] = ta.value;
-      det.querySelector("summary").textContent = ta.value.trim() ? "My version ✓" : "My version";
+      det.querySelector("summary").textContent = mineLabel(det, ta.value.trim());
       mySave();
     });
   });

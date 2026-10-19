@@ -7,4 +7,11 @@ window.ORGANIZER_CONFIG = {
   // lanes: { jobs: [ ... ] },                            // rename lanes or change follow-up days (keep the ids)
   // pickerIds: { board: "my-board", secondBackup: "my-backup" },
   // blurPay: true,                                        // blur {.pay} sections until you press H
+  // library: {                                            // guide buttons on every prep sheet, with their keys
+  //   sheetButtons: [                                     // this list replaces the default one, so keep the first two
+  //     { doc: "call-scripts", label: "Scripts", key: "s" },
+  //     { doc: "cheat-sheet", label: "Cheat sheet", key: "c" },
+  //     { doc: "my-deep-dive", label: "Deep dive", key: "d" }, // Library/<Group>/04_My_deep_dive.md
+  //   ],
+  // },
 };
