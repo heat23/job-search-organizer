@@ -1474,8 +1474,8 @@ const folderInit = (t) => "window.ORGANIZER_FOLDER = window.__pick;" + SCRIPT(t)
         await ctx.close();
       }
     }
-    // ---- V19: odd revision values from a tool (advG LOW-2): text numbers count, anything else is 0, huge ones are capped
-    //      (at Number.MAX_SAFE_INTEGER, where whole numbers stay exact)
+    // ---- V19: odd revision values from a tool (advG LOW-2, advI LOW-1): text numbers count; a number that isn't a
+    //      whole number from 0 to 2^52 is invalid (set aside, see V26), never capped; anything else is 0
     if (want("V19")) {
       const { ctx, p } = await open();
       const r = await p.evaluate(() =>
@@ -1488,11 +1488,15 @@ const folderInit = (t) => "window.ORGANIZER_FOLDER = window.__pick;" + SCRIPT(t)
           { location: 1e16 },
           "x",
           [1],
-        ].map((v) => JSON.stringify(clean({ company: "X", revs: v }).revs || null)),
+        ].map((v) => {
+          const c = clean({ company: "X", revs: v });
+          return JSON.stringify([c.revs || null, BADREVS.get(c) || null]);
+        }),
       );
       ok(
-        "V19 revs are cleaned: whole numbers from 1 up, capped",
-        r.join("|") === '{"location":2}|null|null|null|{"location":2}|{"location":9007199254740991}|null|null',
+        "V19 revs are cleaned: whole numbers kept, invalid numbers set aside (never capped), the rest ignored",
+        r.join("|") ===
+          '[{"location":2},null]|[null,{"location":-1}]|[null,null]|[null,null]|[null,{"location":2.5}]|[null,{"location":10000000000000000}]|[null,null]|[null,null]',
         r.join("|"),
       );
       await write(
@@ -1641,13 +1645,25 @@ const folderInit = (t) => "window.ORGANIZER_FOLDER = window.__pick;" + SCRIPT(t)
             JSON.stringify([f.notes, f.revs, s]),
           );
           ok(
-            `V22 (${label}) the status line ${keepMine ? "records nothing" : "says the stored copy was out of date"}`,
+            `V22 (${label}) the status line ${keepMine ? "records nothing" : "says the change was replaced and where it is kept"}`,
             keepMine
-              ? !/Kept your version|out of date/.test(s)
-              : /stored copy was out of date: took the file's newer value of 1 field\./.test(s) &&
-                  !/Kept your version/.test(s),
+              ? !/Kept your version|replaced/.test(s)
+              : /Your unsaved change to 1 field was replaced by the file's newer value .*your version is in backups\/board_data_browser_\d{4}-\d{2}-\d{2}_\d{4,6}\.js\./.test(
+                  s,
+                ) && !/Kept your version/.test(s),
             s,
           );
+          if (!keepMine) {
+            const names = await backups(p, "^board_data_browser_");
+            const t = names.length ? await p.evaluate((n) => window.__get("backups/" + n), names[0]) : "";
+            ok(
+              `V22 (${label}) the replaced value is in the backup, which Restore a backup… can read`,
+              names.length === 1 &&
+                parseBoard(t).jobs.fernhill.notes === "STORED, DIRTY" &&
+                (await p.evaluate((x) => !!backupInfo(x), t)),
+              JSON.stringify(names),
+            );
+          }
           ok(
             `V22 (${label}) nothing left dirty`,
             await p.evaluate(
@@ -1711,6 +1727,214 @@ const folderInit = (t) => "window.ORGANIZER_FOLDER = window.__pick;" + SCRIPT(t)
       );
       ok("V23 no errors", !p.errs.length, p.errs.join("|"));
       await ctx.close();
+    }
+    // ---- V24: browser storage full while saving to the folder FAILS (advI HIGH-1): a locked data file, or a broken
+    //      one. The stored copy, the only copy of the changes made since saving failed, is never removed; the status line
+    //      says the latest changes aren't kept anywhere and offers a download; after a crash the earlier change comes back
+    if (want("V24")) {
+      const FULL = `(() => { const set = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) {
+        if (localStorage.getItem("__full") === "1" && /:board$/.test(k)) throw new DOMException("full", "QuotaExceededError");
+        return set.call(this, k, v); }; })();`;
+      const LOCK = `(() => { const M = window.MemFS.MemFile.prototype, cw = M.createWritable;
+        M.createWritable = async function () {
+          if (window.__lock && this.name === "board_data.js") throw new DOMException("locked", "NoModificationAllowedError");
+          return cw.call(this); }; })();`;
+      for (const what of ["locked file", "broken file"]) {
+        const ctx = await b.newContext();
+        let p = await mkpage(ctx, { connect: true, init: FULL + LOCK });
+        await wait(p, 1500);
+        const good = await raw(p);
+        if (what === "locked file") await p.evaluate(() => (window.__lock = true));
+        else {
+          await p.evaluate((t) => window.__put("board_data.js", t.slice(0, t.length - 40)), good);
+          await focus(p, 300);
+        }
+        await p.evaluate(() => upd("jobs", "fernhill", { notes: "E1 typed while saving fails" }));
+        await wait(p, 1200);
+        const s1 = await status(p);
+        ok(
+          `V24 (${what}) saving fails; with browser storage working the change is kept there, and the line says so`,
+          /Your changes are kept in this browser/.test(s1) && !/aren't being kept/.test(s1),
+          s1,
+        );
+        await p.evaluate(() => localStorage.setItem("__full", "1"));
+        await p.evaluate(() => upd("jobs", "fernhill", { location: "E2 typed when storage is full" }));
+        await wait(p, 1200);
+        const stored = await p.evaluate(() => {
+          const j = JSON.parse(localStorage.getItem(lsKey("board")) || "null");
+          return j && j.jobs.fernhill.notes;
+        });
+        ok(
+          `V24 (${what}) storage full too: the stored copy (with the earlier change) is not removed`,
+          stored === "E1 typed while saving fails",
+          String(stored),
+        );
+        const s2 = await status(p);
+        ok(
+          `V24 (${what}) the status line says the latest changes aren't kept anywhere, and offers a download`,
+          /can't keep a copy either.*aren't being kept anywhere/.test(s2) &&
+            !/kept in this browser|safe in this browser/.test(s2) &&
+            (await p.$$("#status button")).length === 2,
+          s2,
+        );
+        const btn = await p.$("#status button.primary");
+        const dl = btn
+          ? (await Promise.all([p.waitForEvent("download", { timeout: 5000 }).catch(() => null), btn.click()]))[0]
+          : null;
+        const dtext = dl ? fs.readFileSync(await dl.path(), "utf8") : "";
+        ok(
+          `V24 (${what}) "Download a backup copy" saves the board with both changes`,
+          !!dl &&
+            /^board_data_backup_\d{4}-\d{2}-\d{2}\.js$/.test(dl.suggestedFilename()) &&
+            parseBoard(dtext).jobs.fernhill.notes === "E1 typed while saving fails" &&
+            parseBoard(dtext).jobs.fernhill.location === "E2 typed when storage is full",
+          dl ? dl.suggestedFilename() : "no download",
+        );
+        ok(`V24 (${what}) no errors`, !p.errs.length, p.errs.join("|"));
+        /* the tab ends without a deliberate close (a crash, a restart); the cause is fixed and the page reopened */
+        await p.close();
+        p = await mkpage(ctx, { text: good, init: 'localStorage.removeItem("__full");' + FULL + folderInit(good) });
+        await wait(p, 2000);
+        ok(
+          `V24 (${what}) reopened: the change made while saving failed is back and written`,
+          (await disk(p)).jobs.fernhill.notes === "E1 typed while saving fails",
+          (await disk(p)).jobs.fernhill.notes,
+        );
+        ok(`V24 (${what}) reopened no errors`, !p.errs.length, p.errs.join("|"));
+        await ctx.close();
+      }
+    }
+    // ---- V25: a change made with saving off that another tool also changed in the file (advI MEDIUM-1): at the next
+    //      load the file's newer value wins, but the person's value is kept (in this browser, then in
+    //      backups/board_data_browser_….js) and the status line says so, with saving off too
+    if (want("V25")) {
+      const PERSON = "PERSON typed this with saving off";
+      for (const mode of ["saving off", "folder connected"]) {
+        const ctx = await b.newContext();
+        let p = await mkpage(ctx, {});
+        await wait(p, 800);
+        const t0 = await raw(p);
+        await p.evaluate((x) => upd("jobs", "fernhill", { notes: x }), PERSON);
+        await wait(p, 500);
+        await p.close();
+        /* meanwhile an assistant appends to the same notes from a fresh read, bumping as AGENTS.md asks */
+        const d = parseBoard(t0);
+        d.jobs.fernhill = A(d.jobs.fernhill, { notes: d.jobs.fernhill.notes + "\nRecruiter call booked (assistant)" });
+        const t = textOf(t0, d);
+        p = await mkpage(ctx, { text: t, init: mode === "saving off" ? SCRIPT(t) : folderInit(t) });
+        await wait(p, 1800);
+        const kept = () => p.evaluate(() => localStorage.getItem(lsKey("dropped")));
+        const browserBackups = async () => {
+          const names = await backups(p, "^board_data_browser_\\d{4}-\\d{2}-\\d{2}_\\d{4,6}\\.js$");
+          return Promise.all(names.map((n) => p.evaluate((x) => window.__get("backups/" + x), n)));
+        };
+        ok(
+          `V25 (${mode}) the file's newer value is taken`,
+          /Recruiter call booked/.test(await p.evaluate(() => store.jobs.fernhill.notes)),
+        );
+        let s = await status(p);
+        if (mode === "saving off") {
+          ok(
+            "V25 (saving off) the note shows now, and the person's value is kept in this browser",
+            /Your unsaved change to 1 field was replaced by the file's newer value.*kept in this browser and goes to backups\/ once saving to your folder is on/.test(
+              s,
+            ) && (await kept()).includes(PERSON),
+            s,
+          );
+          await p
+            .getByRole("button", { name: /Turn on saving/ })
+            .first()
+            .click();
+          await wait(p, 1200);
+          s = await status(p);
+          const bk = await browserBackups();
+          ok(
+            "V25 (saving off) once saving is on, the kept value goes to backups/ and the line says so",
+            bk.length === 1 &&
+              bk[0].includes(PERSON) &&
+              parseBoard(bk[0]).jobs.fernhill.notes === PERSON &&
+              /(your version is|now) in backups\/board_data_browser_/.test(s) &&
+              (await kept()) === null,
+            s,
+          );
+        } else {
+          const bk = await browserBackups();
+          ok(
+            "V25 (folder connected) the person's value is in backups/ and the note names the file",
+            bk.length === 1 &&
+              parseBoard(bk[0]).jobs.fernhill.notes === PERSON &&
+              /Your unsaved change to 1 field was replaced.*your version is in backups\/board_data_browser_/.test(s) &&
+              (await kept()) === null,
+            s,
+          );
+        }
+        const x = await p.$('#status button[aria-label="Dismiss this note"]');
+        if (x) await x.click();
+        ok(
+          `V25 (${mode}) the note can be dismissed`,
+          !!x && !/replaced|backups/.test(await status(p)),
+          await status(p),
+        );
+        ok(`V25 (${mode}) no errors`, !p.errs.length, p.errs.join("|"));
+        await ctx.close();
+      }
+    }
+    // ---- V26: revisions that aren't whole numbers from 0 to 2^52 (advI LOW-1): read as a change to the field (this
+    //      browser's revision + 1), never capped, so a saved edit after them still keeps out an older copy written back
+    //      later, with a valid or with the same invalid revision
+    if (want("V26")) {
+      for (const R of [Number.MAX_SAFE_INTEGER, 2 ** 53, 2 ** 60, 1e300, "9007199254740993", 2.5, -3]) {
+        const { ctx, p } = await open();
+        const k = rv((await disk(p)).jobs.fernhill, "notes");
+        await write(
+          p,
+          (d) =>
+            (d.jobs.fernhill = {
+              ...A(d.jobs.fernhill, { notes: "assistant note" }, false),
+              revs: { ...(d.jobs.fernhill.revs || {}), notes: R },
+            }),
+        );
+        const tA = await raw(p); // the assistant's file, with the invalid revision
+        await focus(p, 1500);
+        const f1 = (await disk(p)).jobs.fernhill;
+        ok(
+          `V26 (${JSON.stringify(R)}) taken as a change, written back with a whole revision`,
+          f1.notes === "assistant note" && rv(f1, "notes") === k + 1,
+          JSON.stringify(f1.revs),
+        );
+        const t0 = await raw(p);
+        await p.evaluate(() => upd("jobs", "fernhill", { notes: "PERSON NOTE (saved)" }));
+        await wait(p, 1200);
+        await p.evaluate(() => setNote(""));
+        /* an older copy written back, with its own (invalid) bump of another field */
+        await write(
+          p,
+          (d) =>
+            (d.jobs.fernhill = {
+              ...A(d.jobs.fernhill, { location: "Remote (asst)" }, false),
+              revs: { ...d.jobs.fernhill.revs, location: typeof R === "number" ? R + 1 : R },
+            }),
+          t0,
+        );
+        await focus(p, 1500);
+        let f = (await disk(p)).jobs.fernhill;
+        ok(
+          `V26 (${JSON.stringify(R)}) an older copy written back keeps out of the saved note; its own edit is taken`,
+          f.notes === "PERSON NOTE (saved)" && f.location === "Remote (asst)",
+          JSON.stringify([f.notes, f.location, f.revs]),
+        );
+        /* the assistant's first file, with the same invalid revision, written back again */
+        await p.evaluate((x) => window.__put("board_data.js", x), tA);
+        await focus(p, 1500);
+        f = (await disk(p)).jobs.fernhill;
+        ok(
+          `V26 (${JSON.stringify(R)}) the same invalid revision written back again doesn't win over the saved note`,
+          f.notes === "PERSON NOTE (saved)" && Number.isSafeInteger(rv(f, "notes")),
+          JSON.stringify([f.notes, f.revs]),
+        );
+        ok(`V26 (${JSON.stringify(R)}) no errors`, !p.errs.length, p.errs.join("|"));
+        await ctx.close();
+      }
     }
   } catch (e) {
     ok("revs suite ran without crashing", false, e.stack || String(e));

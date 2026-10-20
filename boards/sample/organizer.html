@@ -2207,8 +2207,9 @@ a.hit span {
      window.ORGANIZER_CONFIG = { ownerName: "Alex", files: { resume: "Alex_Resume.pdf" } };
    It is merged over these defaults. Lane ids (todo, applied, screen…) are fixed; their names, colors and timings are not. */
 const DEFAULT_CONFIG = {
+  /* The page title. Set here, it is used as is, even with ownerName set. */
   appTitle: "Job Search Organizer",
-  /* Optional. Shown in the page title as "<name>'s job search". */
+  /* Optional. The page title becomes "<name>'s job search" (unless appTitle is set too). */
   ownerName: "",
   /* Set only by the live demo page (tools/build-demo.mjs): { repoUrl }. It shows a demo banner in place of the setup steps. */
   demo: null,
@@ -2767,9 +2768,11 @@ function clean(r) {
   /* per-field revisions (see "merging" below); a record-level "rev" from an earlier version means nothing now */
   delete o.rev;
   if (o.revs !== undefined) {
-    const rs = cleanRevs(o.revs);
+    const bad = {};
+    const rs = cleanRevs(o.revs, bad);
     if (Object.keys(rs).length) o.revs = rs;
     else delete o.revs;
+    if (Object.keys(bad).length) BADREVS.set(o, bad);
   }
   return o;
 }
@@ -2820,26 +2823,63 @@ function normalize(src) {
      after writing the file but before clearing the flag, or browser storage stopped taking new copies). Until the
      first read of the data file, such a field whose revision the file has reached (equal or higher) with a different
      value takes the file's value: the file already holds that change or a newer one. Only a stored dirty field with a
-     revision above the file's (a change never written) wins.
+     revision above the file's (a change never written) wins. The value replaced is kept (see keepDropped below).
    - deleted and removedAt are fields like any other. A record only one side has is kept.
    Against the file, a value of yours kept over a different file value is recorded when the file's revision is as high as
    yours or higher (you and another tool changed the same field), or lower while yours isn't dirty (an older copy was
    written back). "Recorded" means the file as it was goes to backups/ and the status line says so, one line per merge
    (recordMerge in storage.js). */
-/* the highest revision kept: whole numbers stay exact up to here, so even a tool that writes a timestamp in milliseconds
-   as a revision leaves room for every later + 1 */
-const MAXREV = Number.MAX_SAFE_INTEGER;
+/* the highest revision read as written: 2^52 (about 4.5e15), so a tool that writes a timestamp in milliseconds or
+   microseconds as a revision still works, and every later + 1 stays an exact whole number (up to 2^53) */
+const MAXREV = 2 ** 52;
 const META = new Set(["revs", "updatedAt", "changedBy"]);
 const rv = (r, f) => (r && r.revs && Object.hasOwn(r.revs, f) ? r.revs[f] : 0);
-/* revs as kept: whole numbers from 1 up (a number written as text is read as that number), capped at MAXREV; anything
-   else counts as 0 */
-function cleanRevs(v) {
+/* revs as kept: whole numbers from 0 to MAXREV (a number written as text is read as that number; 0 is the same as no
+   entry). Any other number (a fraction, a negative number, a nanosecond timestamp, anything at 2^53 or above) is invalid:
+   it goes into `bad` ({field: what was written}) and is read as a change to the field (see fixRevs), never capped. Anything
+   that isn't a number counts as 0. */
+function cleanRevs(v, bad) {
   const out = {};
   if (!v || typeof v !== "object" || Array.isArray(v)) return out;
   for (const [f, x] of Object.entries(v)) {
+    if (f === "__proto__") continue;
     const n = typeof x === "string" && /^\s*\d+\s*$/.test(x) ? Number(x) : x;
-    if (f !== "__proto__" && typeof n === "number" && n >= 1) out[f] = Math.min(MAXREV, Math.floor(n));
+    if (typeof n !== "number") continue;
+    if (Number.isSafeInteger(n) && n >= 0 && n <= MAXREV) {
+      if (n >= 1) out[f] = n;
+    } else if (bad) bad[f] = x;
   }
+  return out;
+}
+/* record (as normalize returned it) -> its invalid revisions, see cleanRevs */
+const BADREVS = new WeakMap();
+/* "c:id\tfield" -> {sig, rev}: the revision an invalid one was read as, so the same copy read again (an older copy written
+   back) gets the same revision, not a new one above this browser's */
+const badSeen = new Map();
+/* R (from the file or another tab) with each invalid revision read as L's revision of the field + 1: a change made
+   after L's (as a tool that bumps would have written it). The same invalid number and value seen again for that field
+   keeps the revision it got the first time, and a number equal to L's (this page wrote it) stays L's. */
+function fixRevs(L, R, k) {
+  const bad = R && BADREVS.get(R);
+  if (!bad) return R;
+  const revs = { ...(R.revs || {}) };
+  for (const [f, x] of Object.entries(bad)) {
+    const lr = rv(L, f),
+      key = k + "\t" + f,
+      sig = canon(x) + "\t" + canon(R[f]),
+      seen = badSeen.get(key);
+    let n;
+    if (x === lr) n = lr;
+    else if (seen && seen.sig === sig) n = seen.rev;
+    else {
+      n = lr + 1;
+      badSeen.set(key, { sig, rev: n });
+    }
+    if (n) revs[f] = n;
+  }
+  const out = { ...R };
+  if (Object.keys(revs).length) out.revs = revs;
+  else delete out.revs;
   return out;
 }
 const canon = (v) =>
@@ -2903,19 +2943,21 @@ function markDirty(k, f) {
 /* R merged into L (see the rule above). Ld and Rd: their dirty fields; file: R is the data file; Ls: {field: rev} of
    L's dirty fields as stored when the page loaded (see loadedDirty). Returns the record, its dirty fields (or null), the
    fields to record, the fields taken from R and the stored dirty fields found out of date. */
-function mergeRec(L, Ld, R, Rd, file, Ls) {
-  if (!L) return { rec: R, dirty: Rd || null, kept: [], taken: [], stale: [] };
+function mergeRec(L, Ld, R, Rd, file, Ls, k) {
+  R = fixRevs(L, R, k);
+  if (!L) return { rec: R, dirty: Rd || null, kept: [], taken: [], stale: [], dropped: {} };
   if (sameRec(L, R)) {
     const d = {};
     if (Ld && Rd) for (const f of Object.keys(Ld)) if (Rd[f]) d[f] = 1;
-    return { rec: L, dirty: Object.keys(d).length ? d : null, kept: [], taken: [], stale: [] };
+    return { rec: L, dirty: Object.keys(d).length ? d : null, kept: [], taken: [], stale: [], dropped: {} };
   }
   const out = { ...L },
     revs = { ...(L.revs || {}) },
     dirty = {},
     kept = [],
     taken = [],
-    stale = [];
+    stale = [],
+    dropped = {};
   let took = false;
   for (const f of fieldsOf(L, R)) {
     const lr = rv(L, f),
@@ -2926,6 +2968,8 @@ function mergeRec(L, Ld, R, Rd, file, Ls) {
     if (ld && file && Ls && Object.hasOwn(Ls, f) && Ls[f] === lr && rr >= lr && !eqv(L[f], R[f])) {
       ld = false;
       stale.push(f);
+      /* this browser's value is replaced: a copy of it is kept (see keepDropped in storage.js) */
+      dropped[f] = L[f] === undefined ? null : L[f];
     }
     let fromR = false,
       n,
@@ -2955,7 +2999,7 @@ function mergeRec(L, Ld, R, Rd, file, Ls) {
       took = true;
       taken.push(f);
     }
-    if (n) revs[f] = Math.min(MAXREV, n);
+    if (n) revs[f] = n;
     else delete revs[f];
     if (d) dirty[f] = 1;
   }
@@ -2967,7 +3011,7 @@ function mergeRec(L, Ld, R, Rd, file, Ls) {
   else delete out.revs;
   const D = Object.keys(dirty).length ? dirty : null;
   /* nothing taken: your stamps stay (a copy only re-stamped changes nothing) */
-  return { rec: took && sameContent(out, R) ? R : sameRec(out, L) ? L : out, dirty: D, kept, taken, stale };
+  return { rec: took && sameContent(out, R) ? R : sameRec(out, L) ? L : out, dirty: D, kept, taken, stale, dropped };
 }
 /* The copy `n` (normalized; nd: its dirty fields, null for the data file) merged into a copy of `st` (sd: its dirty
    fields; ls: the stored dirty revisions still to check, see loadedDirty). Returns the merged copy, its dirty fields and
@@ -2977,18 +3021,20 @@ function mergeStores(st, sd, n, nd, file, ls) {
     dirty = Object.create(null),
     rec = new Set(),
     taken = new Set(),
-    stale = new Set();
+    stale = new Set(),
+    dropped = [];
   for (const k of Object.keys(sd)) dirty[k] = sd[k];
   for (const c of COLLS) {
     for (const id of Object.keys(n[c])) {
       const k = c + ":" + id;
-      const m = mergeRec(hasRec(next, c, id) ? next[c][id] : null, sd[k], n[c][id], nd && nd[k], file, ls && ls[k]);
+      const m = mergeRec(hasRec(next, c, id) ? next[c][id] : null, sd[k], n[c][id], nd && nd[k], file, ls && ls[k], k);
       next[c][id] = m.rec;
       if (m.dirty) dirty[k] = m.dirty;
       else delete dirty[k];
       for (const f of m.kept) rec.add(k + "\t" + f);
       for (const f of m.taken) taken.add(k + "\t" + f);
       for (const f of m.stale) stale.add(k + "\t" + f);
+      for (const [f, v] of Object.entries(m.dropped)) dropped.push({ c, id, f, v });
     }
     /* a record the file lost (removing is deleted:true) is kept and written back; recorded unless it was never written */
     if (file)
@@ -3000,7 +3046,7 @@ function mergeStores(st, sd, n, nd, file, ls) {
           if (fs.some((f) => !d[f])) for (const f of fs) rec.add(k + "\t" + f);
         }
   }
-  return { store: next, dirty, rec, taken, stale };
+  return { store: next, dirty, rec, taken, stale, dropped };
 }
 /* After a successful write of `snap`: the fields that were dirty in it (sd) are clean, unless they changed since. */
 function cleanWritten(snap, sd) {
@@ -3119,6 +3165,23 @@ for (const k of Object.keys(dirtyF)) {
 /* a copy stored by a version before per-field revisions (it has no _dirty): merged by that version's rule, once, at
    the first read of the data file (see legacyMerge) */
 let legacyLocal = !!localCopy && (!Object.hasOwn(saved, "_dirty") || saved._legacy === 1);
+/* This browser's values that the rule above replaced with the file's newer ones (a change made with saving off that
+   another tool or browser also changed in the file): {c, id, f, v, at}. Kept here and in browser storage (the newest 50)
+   until they are written to backups/board_data_browser_<date>_<HHMM>.js (flushDropped in storage.js). */
+let dropped = [];
+try {
+  const j = JSON.parse(lsGet("dropped", "[]"));
+  if (Array.isArray(j))
+    dropped = j.filter(
+      (x) => x && typeof x === "object" && COLLS.includes(x.c) && typeof x.id === "string" && typeof x.f === "string",
+    );
+} catch (e) {}
+function keepDropped(list) {
+  const at = nowIso();
+  for (const x of list) dropped.push({ ...x, at });
+  dropped = dropped.slice(-50);
+  lsSet("dropped", JSON.stringify(dropped));
+}
 /* The data file's records `n` (normalized) merged into this browser's copy; returns {rec, taken, stale} (see
    mergeStores) for recordMerge. */
 function mergeFileIn(n) {
@@ -3129,6 +3192,8 @@ function mergeFileIn(n) {
   const m = mergeStores(store, dirtyF, n, null, true, loadedDirty);
   store = m.store;
   dirtyF = m.dirty;
+  /* the values this browser lost to the file's newer ones are kept (in backups/, or in this browser until then) */
+  if (m.dropped.length) keepDropped(m.dropped);
   return { rec: m.rec, taken: m.taken, stale: m.stale };
 }
 /* what that first merge recorded: written to backups/ and shown once saving to the folder is on (see recordMerge) */
@@ -3256,7 +3321,7 @@ function applyEdit(c, id, patch) {
     if (META.has(f) || f === "rev" || f === "__proto__" || (r ? eqv(r[f], v) : v === undefined)) continue;
     if (v === undefined) delete out[f];
     else out[f] = v;
-    revs[f] = Math.min(MAXREV, rv(r, f) + 1);
+    revs[f] = rv(r, f) + 1;
     markDirty(c + ":" + id, f);
     changed.push(f);
   }
@@ -3340,6 +3405,8 @@ let dirHandle = null,
   writing = false;
 let localOk = true,
   myLocalOk = true;
+/* the last write to the folder succeeded (and none has failed since) */
+let folderOk = false;
 /* This browser's copy is kept together with its dirty fields (see "merging" in store.js), in one entry so another tab
    always gets a matching pair. force: write even when nothing changed since the last write (browser storage may have
    been cleared meanwhile). */
@@ -3356,9 +3423,11 @@ function persistLocal(force) {
   localOk = lsSet("board", text);
   lastLocal = localOk ? text : "";
   /* A stored copy that can't be replaced (browser storage full) goes out of date, and its dirty fields would come back
-     over newer saved values at the next load. With saving to the folder on, the file holds the changes: remove it (the
-     status line says the browser isn't keeping a copy). Without the folder it is the only copy, so it stays. */
-  if (!localOk && dirHandle && canWrite)
+     over newer saved values at the next load. Only while saving to the folder works (the last write succeeded and none
+     has failed since) does the file hold the changes: then it is removed (the status line says the browser isn't
+     keeping a copy). Without the folder, or while writing to it fails (a locked file, a broken data file), it may be the
+     only copy of earlier changes, so it stays. */
+  if (!localOk && dirHandle && canWrite && folderOk && !saveErr)
     try {
       localStorage.removeItem(lsKey("board"));
     } catch (e) {}
@@ -3462,14 +3531,66 @@ async function saveBackup(kind, text) {
   }
 }
 const many = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+/* The note for n fields of this browser's that the file's newer values replaced (see "merging" in store.js); name: the
+   backup that holds them */
+function lostNote(n, name) {
+  return (
+    `Your unsaved change to ${many(n, "field")} was replaced by the file's newer value (another tool or browser changed the same field); ` +
+    (name
+      ? `your version is in backups/${name}.`
+      : dirHandle && canWrite
+        ? "your version is kept in this browser (it couldn't be written to backups/)."
+        : "your version is kept in this browser and goes to backups/ once saving to your folder is on.")
+  );
+}
+/* The replaced values (see keepDropped in store.js) go to backups/board_data_browser_<date>_<HHMM>.js (the last 10 are
+   kept): the board as it is, with those values put back, so Restore a backup… can take it; the header lists them.
+   Returns the file's name, or "" when it couldn't be written. */
+async function flushDropped() {
+  if (!dropped.length || !dirHandle || !canWrite) return "";
+  const list = dropped.slice();
+  const board = copyStore(store);
+  for (const x of list)
+    if (hasRec(board, x.c, x.id)) {
+      const r = { ...board[x.c][x.id] };
+      if (x.v === null) delete r[x.f];
+      else r[x.f] = x.v;
+      board[x.c][x.id] = r;
+    }
+  const safe = (v) => String(v).replace(/[\r\n\u2028\u2029]/g, " ");
+  const text =
+    "// This browser's unsaved changes that were replaced by newer values in the data file (another tool or browser\n" +
+    "// changed the same fields). Below is the board with those values put back; Restore a backup… can take it.\n" +
+    list
+      .map((x) => `//   ${safe(x.at)}  ${safe(x.c)}/${safe(x.id)}  ${safe(x.f)}: ${safe(JSON.stringify(x.v))}`)
+      .join("\n") +
+    "\nwindow.BOARD_DATA = " +
+    JSON.stringify({ version: 1, savedAt: nowIso(), ...board }, null, 1) +
+    ";\n";
+  const name = await saveBackup("browser", text);
+  if (name) {
+    dropped = dropped.slice(list.length);
+    if (dropped.length) lsSet("dropped", JSON.stringify(dropped));
+    else
+      try {
+        localStorage.removeItem(lsKey("dropped"));
+      } catch (e) {}
+  }
+  return name;
+}
 /* m.rec: the set of "c:id\tfield" kept over the file's value; m.taken: the fields taken from the file in the same merge
    (named too, so the line never reads as though everything was kept); m.stale: the fields this browser's stored copy
    had an out-of-date change for (the file's value was taken) */
 async function recordMerge(m, fileText) {
   const { rec, taken, stale } = m;
+  /* replaced values kept in this browser earlier (saving was off) go to backups/ now */
+  const earlier = !stale.size && dropped.length ? dropped.length : 0;
+  const lostName = stale.size || earlier ? await flushDropped() : "";
   const old = stale.size
-    ? `This browser's stored copy was out of date: took the file's newer value of ${many(stale.size, "field")}.`
-    : "";
+    ? lostNote(stale.size, lostName)
+    : earlier && lostName
+      ? `The ${many(earlier, "change")} this browser kept after the file replaced them ${earlier === 1 ? "is" : "are"} now in backups/${lostName}.`
+      : "";
   if (!rec.size) {
     if (old) setNote(old);
     return;
@@ -3510,6 +3631,7 @@ async function writeFile() {
     const r = await readFileInto();
     if (r === "bad") {
       saveErr = "bad";
+      folderOk = false;
     } else {
       await dailyBackup(lastRaw);
       /* What is written is a copy taken now: an edit made while the file is being written is not in the file, so it
@@ -3532,6 +3654,8 @@ async function writeFile() {
       await w.close();
       /* The file holds the snapshot now: its dirty fields are clean, in memory and in the stored copy, before anything
          else can wait (a page closed after this point never leaves a stored dirty flag for a change already written). */
+      saveErr = "";
+      folderOk = true;
       syncedText = text;
       cleanWritten(snap, snapDirty);
       persistLocal();
@@ -3553,6 +3677,7 @@ async function writeFile() {
       myResume();
     }
   } catch (e) {
+    folderOk = false;
     if (e && e.name === "NotFoundError") {
       dirHandle = null;
       canWrite = false;
@@ -3972,7 +4097,23 @@ function renderStatus() {
   s.className = "status";
   const dot = () => el("span", { class: "sdot" });
   if (!FS_OK) return;
-  const extra = () => (statusNote ? el("span", { class: "snote", text: statusNote }) : "");
+  /* a note about the last merge, until it is dismissed */
+  const extra = () =>
+    statusNote
+      ? el(
+          "span",
+          { class: "snote" },
+          statusNote,
+          " ",
+          el("button", {
+            class: "linkbtn snote-x",
+            type: "button",
+            text: "Dismiss",
+            "aria-label": "Dismiss this note",
+            onclick: () => setNote(""),
+          }),
+        )
+      : "";
   if ((!localOk || !myLocalOk) && (!dirHandle || !canWrite)) {
     s.classList.add("bad");
     s.append(
@@ -3987,8 +4128,14 @@ function renderStatus() {
     );
     return;
   }
+  /* with the setup banner up the line stays empty, except for a note (such as changes replaced by the file's) */
+  const noteOnly = () => {
+    if (!statusNote) return;
+    s.classList.add("warn");
+    s.append(dot(), extra());
+  };
   if (!dirHandle) {
-    if (bannerUp) return;
+    if (bannerUp) return noteOnly();
     s.classList.add("warn");
     s.append(
       dot(),
@@ -3999,7 +4146,7 @@ function renderStatus() {
     return;
   }
   if (!canWrite) {
-    if (bannerUp) return;
+    if (bannerUp) return noteOnly();
     s.classList.add("warn");
     s.append(
       dot(),
@@ -4009,21 +4156,29 @@ function renderStatus() {
     );
     return;
   }
-  if (saveErr === "bad") {
-    s.classList.add("bad");
-    s.append(
-      dot(),
-      `${DATA_FILE} has an error, so it wasn't overwritten. Your changes are safe in this browser. Fix the file, or use Restore a backup… at the bottom of the page.`,
-      el("button", { class: "btn small", type: "button", text: "Try again", onclick: writeFile }),
-    );
-    return;
-  }
+  /* Saving to the folder fails. Whether the changes are safe depends on this browser keeping its copy: when it can't
+     either (storage full), nothing keeps the latest changes, and the line says so and offers a download. */
   if (saveErr) {
+    const noLocal = !localOk;
     s.classList.add("bad");
+    const why =
+      saveErr === "bad" ? `${DATA_FILE} has an error, so it wasn't overwritten.` : "Couldn't save to your folder.";
+    const fix = saveErr === "bad" ? " Fix the file, or use Restore a backup… at the bottom of the page." : "";
     s.append(
       dot(),
-      "Couldn't save to your folder. Your changes are kept in this browser.",
+      noLocal
+        ? `${why} This browser can't keep a copy either (its storage is full), so your latest changes aren't being kept anywhere. Download a backup copy now, then fix the problem and keep this page open.${fix}`
+        : `${why} Your changes are kept in this browser.${fix}`,
+      noLocal
+        ? el("button", {
+            class: "btn small primary",
+            type: "button",
+            text: "Download a backup copy",
+            onclick: downloadBackup,
+          })
+        : "",
       el("button", { class: "btn small", type: "button", text: "Try again", onclick: writeFile }),
+      extra(),
     );
     return;
   }
@@ -4052,6 +4207,21 @@ function renderStatus() {
   );
 }
 
+/* "Download a backup copy": the board as this page has it now, as a file the browser downloads (Restore a backup… can
+   take it back). */
+function downloadBackup() {
+  const blob = new Blob([serialize(store)], { type: "text/javascript" });
+  const a = el("a", {
+    href: URL.createObjectURL(blob),
+    download: `${DATA_FILE.replace(/\.js$/, "")}_backup_${TODAY()}.js`,
+  });
+  document.body.append(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  }, 1000);
+}
 function renderBanner() {
   const b = $("#banner");
   if (!b) return;
@@ -6740,11 +6910,26 @@ function libGroups() {
   }
   return [...groups.entries()];
 }
-/* Re-read every guide in the folder (new ones included). Runs when a sheet or the Library opens: at most every 3 seconds. */
-let libReadAt = 0;
-async function refreshDocs(force) {
-  if (!FS.ok() || (!force && Date.now() - libReadAt < 3000)) return false;
+/* Re-read every guide in the folder (new ones included). Runs when a sheet or the Library opens (at most every 3
+   seconds unless forced), once saving is on, and when you come back to the window. A read already running is shared.
+   docsVer counts the changes to the guides; libLoaded: a read of the folder's guides has finished (until then an empty
+   Library says "Loading guides…": the bundle may be missing, out of date or from another tool). */
+let libReadAt = 0,
+  docsRead = null,
+  docsVer = 0,
+  libLoaded = false;
+function refreshDocs(force) {
+  if (!FS.ok()) return Promise.resolve(false);
+  if (docsRead) return docsRead;
+  if (!force && Date.now() - libReadAt < 3000) return Promise.resolve(false);
   libReadAt = Date.now();
+  docsRead = readDocs().finally(() => {
+    docsRead = null;
+    libLoaded = true;
+  });
+  return docsRead;
+}
+async function readDocs() {
   let changed = false;
   const paths = [];
   for (const [n, k] of await FS.list("Library")) {
@@ -6758,6 +6943,7 @@ async function refreshDocs(force) {
       const r = await FS.read(p);
       if (r && ingest(p, r.text)) changed = true;
     }
+  if (changed) docsVer++;
   return changed;
 }
 /* New or changed prep sheets written into the folder since the bundle was made.
@@ -8462,14 +8648,36 @@ function openQuick() {
 /* ================= the Prep library tab: every guide, a search across all of them, a table of contents ================= */
 let libDoc = CONFIG.library.defaultDoc,
   libAnchor = null;
+/* What the Library tab shows was drawn from guides version libShown (docsVer); libShownLoading: it said "Loading guides…".
+   After each read of the folder the tab is drawn again when the guides changed since (see libAfterRead). */
+let libShown = -1,
+  libShownLoading = false;
+function libAfterRead() {
+  const v = $("#view");
+  if (!v || section !== "library" || $("#drawerRoot").childNodes.length || ($q(".hlsearch", v) || {}).value) return;
+  if (docsVer !== libShown || (libShownLoading && libLoaded)) {
+    v.textContent = "";
+    renderLibrary(v);
+  }
+}
+/* Read the folder's guides (when saving is on) and draw the tab again if they changed. */
+function libRefresh(force) {
+  if (!FS.ok()) return;
+  refreshDocs(force).then(libAfterRead, () => {});
+}
 function renderLibrary(v) {
   const groups = libGroups();
+  libShown = docsVer;
+  /* every time the tab is drawn the folder's guides are read again (a new or changed file shows up) */
+  libRefresh(true);
+  libShownLoading = !groups.length && FS.ok() && !libLoaded;
   if (!groups.length) {
     const m = document.createElement("p");
     m.className = "muted";
     m.style.padding = "16px";
-    m.textContent =
-      "No guides yet. Put Markdown files in the Library folder next to this page (the sample board has three to start from), then turn on saving.";
+    m.textContent = libShownLoading
+      ? "Loading guides…"
+      : "No guides yet. Put Markdown files in the Library folder next to this page (the sample board has three to start from), then turn on saving.";
     v.append(m);
     return;
   }
@@ -8624,22 +8832,10 @@ function renderLibrary(v) {
   });
   show(libDoc, libAnchor);
   libAnchor = null;
-  refreshDocs(true).then((ch) => {
-    if (ch && v.isConnected && section === "library" && !srch.value) {
-      v.textContent = "";
-      renderLibrary(v);
-    }
-  });
 }
 /* Coming back to the window re-reads the guides, so a file you just edited or added shows up. */
-window.addEventListener("focus", async () => {
-  if (
-    section === "library" &&
-    !$("#drawerRoot").childNodes.length &&
-    !($q(".hlsearch") || {}).value &&
-    (await refreshDocs(true))
-  )
-    render();
+window.addEventListener("focus", () => {
+  if (section === "library") libRefresh(true);
 });
 
 /* ---- 88-backups.js ---- */
@@ -8832,6 +9028,8 @@ async function pickSecond() {
 let startedUp = false;
 async function startup() {
   if (!FS.ok()) return;
+  /* the guides in the folder (the bundle may be missing or out of date): the Library tab is drawn again if they changed */
+  libRefresh(true);
   await scanPrep();
   await backupToday();
   const day = TODAY();
@@ -9089,7 +9287,13 @@ const Prep = {
 };
 window.Prep = Prep;
 
-document.title = CONFIG.ownerName ? `${CONFIG.ownerName}'s job search` : CONFIG.appTitle;
+/* The title: appTitle when organizer.config.js sets it, otherwise "<ownerName>'s job search" when a name is set, otherwise
+   the default appTitle. */
+const ownTitle = (() => {
+  const u = window.ORGANIZER_CONFIG;
+  return !!u && typeof u === "object" && typeof u.appTitle === "string" && !!u.appTitle.trim();
+})();
+document.title = !ownTitle && CONFIG.ownerName ? `${CONFIG.ownerName}'s job search` : CONFIG.appTitle;
 $("#appTitle").textContent = document.title;
 $("#addBtn").addEventListener("click", () => openAdd(section === "next" ? "jobs" : section));
 $("#search").addEventListener("input", (e) => {
@@ -9105,19 +9309,7 @@ $("#search").addEventListener("keydown", (e) => {
   }
 });
 $("#keysBtn").addEventListener("click", openKeys);
-$("#backupBtn").addEventListener("click", () => {
-  const blob = new Blob([serialize(store)], { type: "text/javascript" });
-  const a = el("a", {
-    href: URL.createObjectURL(blob),
-    download: `${DATA_FILE.replace(/\.js$/, "")}_backup_${TODAY()}.js`,
-  });
-  document.body.append(a);
-  a.click();
-  setTimeout(() => {
-    URL.revokeObjectURL(a.href);
-    a.remove();
-  }, 1000);
-});
+$("#backupBtn").addEventListener("click", downloadBackup);
 $("#restoreBtn").addEventListener("click", openRestore);
 $("#backupNotesBtn").addEventListener("click", () => backupNow(true));
 $("#secondBackupBtn").addEventListener("click", pickSecond);
@@ -9143,6 +9335,7 @@ if (!fileCopy && !localCopy && !FS_OK)
       const r = await readFileInto();
       if (r === "bad") {
         saveErr = "bad";
+        folderOk = false;
       }
       /* today's copy of the data file, even if nothing gets saved today */
       if (r === "ok") await dailyBackup(lastRaw);
@@ -9151,6 +9344,8 @@ if (!fileCopy && !localCopy && !FS_OK)
       myResume();
     }
   }
+  /* saving is off: the note about changes the file replaced shows now (with saving on, recordMerge shows it) */
+  if (pendingRecord && pendingRecord.stale.size) setNote(lostNote(pendingRecord.stale.size, ""));
   render();
 })();
 /* Once saving is on, the prep features start (new prep sheets, daily note backups), then every 20 minutes. */
@@ -9187,6 +9382,7 @@ async function onFocus() {
     const r = await readFileInto();
     if (r === "bad") {
       saveErr = "bad";
+      folderOk = false;
       renderStatus();
       syncPanel();
       return;

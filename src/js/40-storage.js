@@ -17,6 +17,8 @@ let dirHandle = null,
   writing = false;
 let localOk = true,
   myLocalOk = true;
+/* the last write to the folder succeeded (and none has failed since) */
+let folderOk = false;
 /* This browser's copy is kept together with its dirty fields (see "merging" in store.js), in one entry so another tab
    always gets a matching pair. force: write even when nothing changed since the last write (browser storage may have
    been cleared meanwhile). */
@@ -33,9 +35,11 @@ function persistLocal(force) {
   localOk = lsSet("board", text);
   lastLocal = localOk ? text : "";
   /* A stored copy that can't be replaced (browser storage full) goes out of date, and its dirty fields would come back
-     over newer saved values at the next load. With saving to the folder on, the file holds the changes: remove it (the
-     status line says the browser isn't keeping a copy). Without the folder it is the only copy, so it stays. */
-  if (!localOk && dirHandle && canWrite)
+     over newer saved values at the next load. Only while saving to the folder works (the last write succeeded and none
+     has failed since) does the file hold the changes: then it is removed (the status line says the browser isn't
+     keeping a copy). Without the folder, or while writing to it fails (a locked file, a broken data file), it may be the
+     only copy of earlier changes, so it stays. */
+  if (!localOk && dirHandle && canWrite && folderOk && !saveErr)
     try {
       localStorage.removeItem(lsKey("board"));
     } catch (e) {}
@@ -139,14 +143,66 @@ async function saveBackup(kind, text) {
   }
 }
 const many = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+/* The note for n fields of this browser's that the file's newer values replaced (see "merging" in store.js); name: the
+   backup that holds them */
+function lostNote(n, name) {
+  return (
+    `Your unsaved change to ${many(n, "field")} was replaced by the file's newer value (another tool or browser changed the same field); ` +
+    (name
+      ? `your version is in backups/${name}.`
+      : dirHandle && canWrite
+        ? "your version is kept in this browser (it couldn't be written to backups/)."
+        : "your version is kept in this browser and goes to backups/ once saving to your folder is on.")
+  );
+}
+/* The replaced values (see keepDropped in store.js) go to backups/board_data_browser_<date>_<HHMM>.js (the last 10 are
+   kept): the board as it is, with those values put back, so Restore a backup… can take it; the header lists them.
+   Returns the file's name, or "" when it couldn't be written. */
+async function flushDropped() {
+  if (!dropped.length || !dirHandle || !canWrite) return "";
+  const list = dropped.slice();
+  const board = copyStore(store);
+  for (const x of list)
+    if (hasRec(board, x.c, x.id)) {
+      const r = { ...board[x.c][x.id] };
+      if (x.v === null) delete r[x.f];
+      else r[x.f] = x.v;
+      board[x.c][x.id] = r;
+    }
+  const safe = (v) => String(v).replace(/[\r\n\u2028\u2029]/g, " ");
+  const text =
+    "// This browser's unsaved changes that were replaced by newer values in the data file (another tool or browser\n" +
+    "// changed the same fields). Below is the board with those values put back; Restore a backup… can take it.\n" +
+    list
+      .map((x) => `//   ${safe(x.at)}  ${safe(x.c)}/${safe(x.id)}  ${safe(x.f)}: ${safe(JSON.stringify(x.v))}`)
+      .join("\n") +
+    "\nwindow.BOARD_DATA = " +
+    JSON.stringify({ version: 1, savedAt: nowIso(), ...board }, null, 1) +
+    ";\n";
+  const name = await saveBackup("browser", text);
+  if (name) {
+    dropped = dropped.slice(list.length);
+    if (dropped.length) lsSet("dropped", JSON.stringify(dropped));
+    else
+      try {
+        localStorage.removeItem(lsKey("dropped"));
+      } catch (e) {}
+  }
+  return name;
+}
 /* m.rec: the set of "c:id\tfield" kept over the file's value; m.taken: the fields taken from the file in the same merge
    (named too, so the line never reads as though everything was kept); m.stale: the fields this browser's stored copy
    had an out-of-date change for (the file's value was taken) */
 async function recordMerge(m, fileText) {
   const { rec, taken, stale } = m;
+  /* replaced values kept in this browser earlier (saving was off) go to backups/ now */
+  const earlier = !stale.size && dropped.length ? dropped.length : 0;
+  const lostName = stale.size || earlier ? await flushDropped() : "";
   const old = stale.size
-    ? `This browser's stored copy was out of date: took the file's newer value of ${many(stale.size, "field")}.`
-    : "";
+    ? lostNote(stale.size, lostName)
+    : earlier && lostName
+      ? `The ${many(earlier, "change")} this browser kept after the file replaced them ${earlier === 1 ? "is" : "are"} now in backups/${lostName}.`
+      : "";
   if (!rec.size) {
     if (old) setNote(old);
     return;
@@ -187,6 +243,7 @@ async function writeFile() {
     const r = await readFileInto();
     if (r === "bad") {
       saveErr = "bad";
+      folderOk = false;
     } else {
       await dailyBackup(lastRaw);
       /* What is written is a copy taken now: an edit made while the file is being written is not in the file, so it
@@ -209,6 +266,8 @@ async function writeFile() {
       await w.close();
       /* The file holds the snapshot now: its dirty fields are clean, in memory and in the stored copy, before anything
          else can wait (a page closed after this point never leaves a stored dirty flag for a change already written). */
+      saveErr = "";
+      folderOk = true;
       syncedText = text;
       cleanWritten(snap, snapDirty);
       persistLocal();
@@ -230,6 +289,7 @@ async function writeFile() {
       myResume();
     }
   } catch (e) {
+    folderOk = false;
     if (e && e.name === "NotFoundError") {
       dirHandle = null;
       canWrite = false;
@@ -649,7 +709,23 @@ function renderStatus() {
   s.className = "status";
   const dot = () => el("span", { class: "sdot" });
   if (!FS_OK) return;
-  const extra = () => (statusNote ? el("span", { class: "snote", text: statusNote }) : "");
+  /* a note about the last merge, until it is dismissed */
+  const extra = () =>
+    statusNote
+      ? el(
+          "span",
+          { class: "snote" },
+          statusNote,
+          " ",
+          el("button", {
+            class: "linkbtn snote-x",
+            type: "button",
+            text: "Dismiss",
+            "aria-label": "Dismiss this note",
+            onclick: () => setNote(""),
+          }),
+        )
+      : "";
   if ((!localOk || !myLocalOk) && (!dirHandle || !canWrite)) {
     s.classList.add("bad");
     s.append(
@@ -664,8 +740,14 @@ function renderStatus() {
     );
     return;
   }
+  /* with the setup banner up the line stays empty, except for a note (such as changes replaced by the file's) */
+  const noteOnly = () => {
+    if (!statusNote) return;
+    s.classList.add("warn");
+    s.append(dot(), extra());
+  };
   if (!dirHandle) {
-    if (bannerUp) return;
+    if (bannerUp) return noteOnly();
     s.classList.add("warn");
     s.append(
       dot(),
@@ -676,7 +758,7 @@ function renderStatus() {
     return;
   }
   if (!canWrite) {
-    if (bannerUp) return;
+    if (bannerUp) return noteOnly();
     s.classList.add("warn");
     s.append(
       dot(),
@@ -686,21 +768,29 @@ function renderStatus() {
     );
     return;
   }
-  if (saveErr === "bad") {
-    s.classList.add("bad");
-    s.append(
-      dot(),
-      `${DATA_FILE} has an error, so it wasn't overwritten. Your changes are safe in this browser. Fix the file, or use Restore a backup… at the bottom of the page.`,
-      el("button", { class: "btn small", type: "button", text: "Try again", onclick: writeFile }),
-    );
-    return;
-  }
+  /* Saving to the folder fails. Whether the changes are safe depends on this browser keeping its copy: when it can't
+     either (storage full), nothing keeps the latest changes, and the line says so and offers a download. */
   if (saveErr) {
+    const noLocal = !localOk;
     s.classList.add("bad");
+    const why =
+      saveErr === "bad" ? `${DATA_FILE} has an error, so it wasn't overwritten.` : "Couldn't save to your folder.";
+    const fix = saveErr === "bad" ? " Fix the file, or use Restore a backup… at the bottom of the page." : "";
     s.append(
       dot(),
-      "Couldn't save to your folder. Your changes are kept in this browser.",
+      noLocal
+        ? `${why} This browser can't keep a copy either (its storage is full), so your latest changes aren't being kept anywhere. Download a backup copy now, then fix the problem and keep this page open.${fix}`
+        : `${why} Your changes are kept in this browser.${fix}`,
+      noLocal
+        ? el("button", {
+            class: "btn small primary",
+            type: "button",
+            text: "Download a backup copy",
+            onclick: downloadBackup,
+          })
+        : "",
       el("button", { class: "btn small", type: "button", text: "Try again", onclick: writeFile }),
+      extra(),
     );
     return;
   }
@@ -729,6 +819,21 @@ function renderStatus() {
   );
 }
 
+/* "Download a backup copy": the board as this page has it now, as a file the browser downloads (Restore a backup… can
+   take it back). */
+function downloadBackup() {
+  const blob = new Blob([serialize(store)], { type: "text/javascript" });
+  const a = el("a", {
+    href: URL.createObjectURL(blob),
+    download: `${DATA_FILE.replace(/\.js$/, "")}_backup_${TODAY()}.js`,
+  });
+  document.body.append(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  }, 1000);
+}
 function renderBanner() {
   const b = $("#banner");
   if (!b) return;

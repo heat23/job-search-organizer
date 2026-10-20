@@ -42,9 +42,11 @@ function clean(r) {
   /* per-field revisions (see "merging" below); a record-level "rev" from an earlier version means nothing now */
   delete o.rev;
   if (o.revs !== undefined) {
-    const rs = cleanRevs(o.revs);
+    const bad = {};
+    const rs = cleanRevs(o.revs, bad);
     if (Object.keys(rs).length) o.revs = rs;
     else delete o.revs;
+    if (Object.keys(bad).length) BADREVS.set(o, bad);
   }
   return o;
 }
@@ -95,26 +97,63 @@ function normalize(src) {
      after writing the file but before clearing the flag, or browser storage stopped taking new copies). Until the
      first read of the data file, such a field whose revision the file has reached (equal or higher) with a different
      value takes the file's value: the file already holds that change or a newer one. Only a stored dirty field with a
-     revision above the file's (a change never written) wins.
+     revision above the file's (a change never written) wins. The value replaced is kept (see keepDropped below).
    - deleted and removedAt are fields like any other. A record only one side has is kept.
    Against the file, a value of yours kept over a different file value is recorded when the file's revision is as high as
    yours or higher (you and another tool changed the same field), or lower while yours isn't dirty (an older copy was
    written back). "Recorded" means the file as it was goes to backups/ and the status line says so, one line per merge
    (recordMerge in storage.js). */
-/* the highest revision kept: whole numbers stay exact up to here, so even a tool that writes a timestamp in milliseconds
-   as a revision leaves room for every later + 1 */
-const MAXREV = Number.MAX_SAFE_INTEGER;
+/* the highest revision read as written: 2^52 (about 4.5e15), so a tool that writes a timestamp in milliseconds or
+   microseconds as a revision still works, and every later + 1 stays an exact whole number (up to 2^53) */
+const MAXREV = 2 ** 52;
 const META = new Set(["revs", "updatedAt", "changedBy"]);
 const rv = (r, f) => (r && r.revs && Object.hasOwn(r.revs, f) ? r.revs[f] : 0);
-/* revs as kept: whole numbers from 1 up (a number written as text is read as that number), capped at MAXREV; anything
-   else counts as 0 */
-function cleanRevs(v) {
+/* revs as kept: whole numbers from 0 to MAXREV (a number written as text is read as that number; 0 is the same as no
+   entry). Any other number (a fraction, a negative number, a nanosecond timestamp, anything at 2^53 or above) is invalid:
+   it goes into `bad` ({field: what was written}) and is read as a change to the field (see fixRevs), never capped. Anything
+   that isn't a number counts as 0. */
+function cleanRevs(v, bad) {
   const out = {};
   if (!v || typeof v !== "object" || Array.isArray(v)) return out;
   for (const [f, x] of Object.entries(v)) {
+    if (f === "__proto__") continue;
     const n = typeof x === "string" && /^\s*\d+\s*$/.test(x) ? Number(x) : x;
-    if (f !== "__proto__" && typeof n === "number" && n >= 1) out[f] = Math.min(MAXREV, Math.floor(n));
+    if (typeof n !== "number") continue;
+    if (Number.isSafeInteger(n) && n >= 0 && n <= MAXREV) {
+      if (n >= 1) out[f] = n;
+    } else if (bad) bad[f] = x;
   }
+  return out;
+}
+/* record (as normalize returned it) -> its invalid revisions, see cleanRevs */
+const BADREVS = new WeakMap();
+/* "c:id\tfield" -> {sig, rev}: the revision an invalid one was read as, so the same copy read again (an older copy written
+   back) gets the same revision, not a new one above this browser's */
+const badSeen = new Map();
+/* R (from the file or another tab) with each invalid revision read as L's revision of the field + 1: a change made
+   after L's (as a tool that bumps would have written it). The same invalid number and value seen again for that field
+   keeps the revision it got the first time, and a number equal to L's (this page wrote it) stays L's. */
+function fixRevs(L, R, k) {
+  const bad = R && BADREVS.get(R);
+  if (!bad) return R;
+  const revs = { ...(R.revs || {}) };
+  for (const [f, x] of Object.entries(bad)) {
+    const lr = rv(L, f),
+      key = k + "\t" + f,
+      sig = canon(x) + "\t" + canon(R[f]),
+      seen = badSeen.get(key);
+    let n;
+    if (x === lr) n = lr;
+    else if (seen && seen.sig === sig) n = seen.rev;
+    else {
+      n = lr + 1;
+      badSeen.set(key, { sig, rev: n });
+    }
+    if (n) revs[f] = n;
+  }
+  const out = { ...R };
+  if (Object.keys(revs).length) out.revs = revs;
+  else delete out.revs;
   return out;
 }
 const canon = (v) =>
@@ -178,19 +217,21 @@ function markDirty(k, f) {
 /* R merged into L (see the rule above). Ld and Rd: their dirty fields; file: R is the data file; Ls: {field: rev} of
    L's dirty fields as stored when the page loaded (see loadedDirty). Returns the record, its dirty fields (or null), the
    fields to record, the fields taken from R and the stored dirty fields found out of date. */
-function mergeRec(L, Ld, R, Rd, file, Ls) {
-  if (!L) return { rec: R, dirty: Rd || null, kept: [], taken: [], stale: [] };
+function mergeRec(L, Ld, R, Rd, file, Ls, k) {
+  R = fixRevs(L, R, k);
+  if (!L) return { rec: R, dirty: Rd || null, kept: [], taken: [], stale: [], dropped: {} };
   if (sameRec(L, R)) {
     const d = {};
     if (Ld && Rd) for (const f of Object.keys(Ld)) if (Rd[f]) d[f] = 1;
-    return { rec: L, dirty: Object.keys(d).length ? d : null, kept: [], taken: [], stale: [] };
+    return { rec: L, dirty: Object.keys(d).length ? d : null, kept: [], taken: [], stale: [], dropped: {} };
   }
   const out = { ...L },
     revs = { ...(L.revs || {}) },
     dirty = {},
     kept = [],
     taken = [],
-    stale = [];
+    stale = [],
+    dropped = {};
   let took = false;
   for (const f of fieldsOf(L, R)) {
     const lr = rv(L, f),
@@ -201,6 +242,8 @@ function mergeRec(L, Ld, R, Rd, file, Ls) {
     if (ld && file && Ls && Object.hasOwn(Ls, f) && Ls[f] === lr && rr >= lr && !eqv(L[f], R[f])) {
       ld = false;
       stale.push(f);
+      /* this browser's value is replaced: a copy of it is kept (see keepDropped in storage.js) */
+      dropped[f] = L[f] === undefined ? null : L[f];
     }
     let fromR = false,
       n,
@@ -230,7 +273,7 @@ function mergeRec(L, Ld, R, Rd, file, Ls) {
       took = true;
       taken.push(f);
     }
-    if (n) revs[f] = Math.min(MAXREV, n);
+    if (n) revs[f] = n;
     else delete revs[f];
     if (d) dirty[f] = 1;
   }
@@ -242,7 +285,7 @@ function mergeRec(L, Ld, R, Rd, file, Ls) {
   else delete out.revs;
   const D = Object.keys(dirty).length ? dirty : null;
   /* nothing taken: your stamps stay (a copy only re-stamped changes nothing) */
-  return { rec: took && sameContent(out, R) ? R : sameRec(out, L) ? L : out, dirty: D, kept, taken, stale };
+  return { rec: took && sameContent(out, R) ? R : sameRec(out, L) ? L : out, dirty: D, kept, taken, stale, dropped };
 }
 /* The copy `n` (normalized; nd: its dirty fields, null for the data file) merged into a copy of `st` (sd: its dirty
    fields; ls: the stored dirty revisions still to check, see loadedDirty). Returns the merged copy, its dirty fields and
@@ -252,18 +295,20 @@ function mergeStores(st, sd, n, nd, file, ls) {
     dirty = Object.create(null),
     rec = new Set(),
     taken = new Set(),
-    stale = new Set();
+    stale = new Set(),
+    dropped = [];
   for (const k of Object.keys(sd)) dirty[k] = sd[k];
   for (const c of COLLS) {
     for (const id of Object.keys(n[c])) {
       const k = c + ":" + id;
-      const m = mergeRec(hasRec(next, c, id) ? next[c][id] : null, sd[k], n[c][id], nd && nd[k], file, ls && ls[k]);
+      const m = mergeRec(hasRec(next, c, id) ? next[c][id] : null, sd[k], n[c][id], nd && nd[k], file, ls && ls[k], k);
       next[c][id] = m.rec;
       if (m.dirty) dirty[k] = m.dirty;
       else delete dirty[k];
       for (const f of m.kept) rec.add(k + "\t" + f);
       for (const f of m.taken) taken.add(k + "\t" + f);
       for (const f of m.stale) stale.add(k + "\t" + f);
+      for (const [f, v] of Object.entries(m.dropped)) dropped.push({ c, id, f, v });
     }
     /* a record the file lost (removing is deleted:true) is kept and written back; recorded unless it was never written */
     if (file)
@@ -275,7 +320,7 @@ function mergeStores(st, sd, n, nd, file, ls) {
           if (fs.some((f) => !d[f])) for (const f of fs) rec.add(k + "\t" + f);
         }
   }
-  return { store: next, dirty, rec, taken, stale };
+  return { store: next, dirty, rec, taken, stale, dropped };
 }
 /* After a successful write of `snap`: the fields that were dirty in it (sd) are clean, unless they changed since. */
 function cleanWritten(snap, sd) {
@@ -394,6 +439,23 @@ for (const k of Object.keys(dirtyF)) {
 /* a copy stored by a version before per-field revisions (it has no _dirty): merged by that version's rule, once, at
    the first read of the data file (see legacyMerge) */
 let legacyLocal = !!localCopy && (!Object.hasOwn(saved, "_dirty") || saved._legacy === 1);
+/* This browser's values that the rule above replaced with the file's newer ones (a change made with saving off that
+   another tool or browser also changed in the file): {c, id, f, v, at}. Kept here and in browser storage (the newest 50)
+   until they are written to backups/board_data_browser_<date>_<HHMM>.js (flushDropped in storage.js). */
+let dropped = [];
+try {
+  const j = JSON.parse(lsGet("dropped", "[]"));
+  if (Array.isArray(j))
+    dropped = j.filter(
+      (x) => x && typeof x === "object" && COLLS.includes(x.c) && typeof x.id === "string" && typeof x.f === "string",
+    );
+} catch (e) {}
+function keepDropped(list) {
+  const at = nowIso();
+  for (const x of list) dropped.push({ ...x, at });
+  dropped = dropped.slice(-50);
+  lsSet("dropped", JSON.stringify(dropped));
+}
 /* The data file's records `n` (normalized) merged into this browser's copy; returns {rec, taken, stale} (see
    mergeStores) for recordMerge. */
 function mergeFileIn(n) {
@@ -404,6 +466,8 @@ function mergeFileIn(n) {
   const m = mergeStores(store, dirtyF, n, null, true, loadedDirty);
   store = m.store;
   dirtyF = m.dirty;
+  /* the values this browser lost to the file's newer ones are kept (in backups/, or in this browser until then) */
+  if (m.dropped.length) keepDropped(m.dropped);
   return { rec: m.rec, taken: m.taken, stale: m.stale };
 }
 /* what that first merge recorded: written to backups/ and shown once saving to the folder is on (see recordMerge) */
@@ -531,7 +595,7 @@ function applyEdit(c, id, patch) {
     if (META.has(f) || f === "rev" || f === "__proto__" || (r ? eqv(r[f], v) : v === undefined)) continue;
     if (v === undefined) delete out[f];
     else out[f] = v;
-    revs[f] = Math.min(MAXREV, rv(r, f) + 1);
+    revs[f] = rv(r, f) + 1;
     markDirty(c + ":" + id, f);
     changed.push(f);
   }

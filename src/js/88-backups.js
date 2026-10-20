@@ -187,6 +187,8 @@ async function pickSecond() {
 let startedUp = false;
 async function startup() {
   if (!FS.ok()) return;
+  /* the guides in the folder (the bundle may be missing or out of date): the Library tab is drawn again if they changed */
+  libRefresh(true);
   await scanPrep();
   await backupToday();
   const day = TODAY();

@@ -107,6 +107,7 @@ To start from the sample guides, copy the `.md` files under `boards/sample/Libra
 
 `organizer.config.js` holds your settings. Anything you leave out keeps its default; the full list is in [`src/js/00-config.js`](src/js/00-config.js). Reload the page after a change.
 
+- **Title.** `ownerName: "Alex"` makes the page title "Alex's job search". `appTitle` sets the title yourself; when both are set, `appTitle` wins.
 - **Lanes.** Lane ids (`todo`, `applied`, `screen`, `interview`, `offer`, `closed`, and the ones under `hunters` and `people`) are fixed: the data file, `AGENTS.md` and the page rely on them. A lane's `name`, `color` and `follow` (follow-up days) are yours to change. Your list replaces the default one, so list every lane by its id; a lane keeps the default settings you leave out. If a lane is missing, the page adds the default one back and logs a warning in the browser console.
 - **Call types.** Each one is `{ label, moves }`. `label` is what the booking box shows and what's stored on the card. `moves` sets where booking that call moves a job: `"screen"` (Applied → Recruiter screen), `"interview"` (Applied or Recruiter screen → Interviewing) or `"none"`. Because the move comes from `moves`, you can rename the labels:
 
@@ -138,7 +139,7 @@ Job Search/
 ```
 
 - Chrome and Edge can write to a folder you pick (the [File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_API)). Other browsers open the page as view-only.
-- Every change is also kept in the browser, so nothing is lost if saving pauses. If a notes file changes on disk while you type, both versions are kept.
+- Every change is also kept in the browser, so nothing is lost if saving pauses or fails. If the browser can't keep it either (its storage is full) while saving fails, the status line says your latest changes aren't kept anywhere and offers **Download a backup copy**. If you change a field while saving is off and your assistant or another browser changes the same field in the file before saving is on again, the file's newer value wins at the next load; your version is kept in `backups/board_data_browser_<date>_<HHMM>.js` (in the browser until saving is on) and the status line says so. If a notes file changes on disk while you type, both versions are kept.
 - **Your assistant and the page can both edit the board.** Each record keeps a revision number per field in `revs`, in the file itself, and whoever changes a field raises its number by one (`AGENTS.md` tells your assistant to). For each field the higher number wins, so a copy your assistant read earlier and writes back later never undoes a change you made since, in this browser, another browser or after clearing site data. An edit your assistant made without raising the number is still applied, unless you changed the same field since. When you both changed the same field and yours isn't saved yet, your value is kept. When the page keeps your value over a different one in the file, the file's version goes to `backups/` and the status line says so.
 - **Backups:** `backups/` gets a copy of `board_data.js` each day before the first save, and your notes and `My_answers.md` each day. To go back, click **Restore a backup…** at the bottom of the page: it lists those copies with their date and card counts (or pick any `.js` copy, such as one from **Download a backup copy**), asks first, saves the current file to `backups/board_data_before_restore_<time>.js`, and has an Undo. Undo puts back what the restore changed, except fields you changed since. Copying an old file over `board_data.js` by hand doesn't restore anything: its revision numbers aren't newer, so the page keeps the current values.
 - **`Library/My_answers.md`** holds the answers you type in the "My version" and "Their answer" boxes. If it ever reads as empty or cut short (a sync client or an editor caught halfway), nothing is deleted: the page copies the odd file to `backups/` and writes your answers back. Deleting an answer from the file by hand isn't supported: the page writes it back. To remove one, empty its box (or click **Remove** next to an answer whose question is no longer on the prep sheet); to remove them all, use **Clear all my answers…** in the Prep library (it has an Undo).
@@ -165,7 +166,7 @@ A job gets a prep sheet as soon as `Job notes/<job id>/prep.md` exists. It opens
 
 - **No framework, no runtime dependencies.** 18 small plain-JavaScript files under `src/`, joined by an 80-line build script into one HTML file that runs from `file://`.
 - **Safe with other writers.** The page and other tools merge field by field by revision numbers kept in the file, so clocks don't matter and every browser decides the same way. Each field's number in `revs` goes up by one with every change, and the page remembers which fields you changed that aren't in the file yet. For each field the higher number wins; a field you changed and the page hasn't saved yet keeps your value; an edit made without a new number is taken when you didn't change that field. An older copy or a record deleted outright keeps your version, saves the file's version to `backups/` and shows a short note. Nothing is hard-deleted, a notes file that changed on disk is never overwritten, and an answer missing from `My_answers.md` is written back, never deleted. So you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
-- **Tested in a real browser.** 642 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
+- **Tested in a real browser.** 713 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
 - **Private.** Guides are escaped before rendering, and a test fails if the page makes any network request.
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -176,7 +177,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 npm install
 npx playwright install chromium   # once, for the tests
 npm run build                     # src/ -> boards/*/organizer.html
-npm test                          # 642 browser checks
+npm test                          # 713 browser checks
 npm run demo                      # the live demo page -> _site/index.html
 ```
 

@@ -1,14 +1,36 @@
 /* ================= the Prep library tab: every guide, a search across all of them, a table of contents ================= */
 let libDoc = CONFIG.library.defaultDoc,
   libAnchor = null;
+/* What the Library tab shows was drawn from guides version libShown (docsVer); libShownLoading: it said "Loading guides…".
+   After each read of the folder the tab is drawn again when the guides changed since (see libAfterRead). */
+let libShown = -1,
+  libShownLoading = false;
+function libAfterRead() {
+  const v = $("#view");
+  if (!v || section !== "library" || $("#drawerRoot").childNodes.length || ($q(".hlsearch", v) || {}).value) return;
+  if (docsVer !== libShown || (libShownLoading && libLoaded)) {
+    v.textContent = "";
+    renderLibrary(v);
+  }
+}
+/* Read the folder's guides (when saving is on) and draw the tab again if they changed. */
+function libRefresh(force) {
+  if (!FS.ok()) return;
+  refreshDocs(force).then(libAfterRead, () => {});
+}
 function renderLibrary(v) {
   const groups = libGroups();
+  libShown = docsVer;
+  /* every time the tab is drawn the folder's guides are read again (a new or changed file shows up) */
+  libRefresh(true);
+  libShownLoading = !groups.length && FS.ok() && !libLoaded;
   if (!groups.length) {
     const m = document.createElement("p");
     m.className = "muted";
     m.style.padding = "16px";
-    m.textContent =
-      "No guides yet. Put Markdown files in the Library folder next to this page (the sample board has three to start from), then turn on saving.";
+    m.textContent = libShownLoading
+      ? "Loading guides…"
+      : "No guides yet. Put Markdown files in the Library folder next to this page (the sample board has three to start from), then turn on saving.";
     v.append(m);
     return;
   }
@@ -163,20 +185,8 @@ function renderLibrary(v) {
   });
   show(libDoc, libAnchor);
   libAnchor = null;
-  refreshDocs(true).then((ch) => {
-    if (ch && v.isConnected && section === "library" && !srch.value) {
-      v.textContent = "";
-      renderLibrary(v);
-    }
-  });
 }
 /* Coming back to the window re-reads the guides, so a file you just edited or added shows up. */
-window.addEventListener("focus", async () => {
-  if (
-    section === "library" &&
-    !$("#drawerRoot").childNodes.length &&
-    !($q(".hlsearch") || {}).value &&
-    (await refreshDocs(true))
-  )
-    render();
+window.addEventListener("focus", () => {
+  if (section === "library") libRefresh(true);
 });

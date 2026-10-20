@@ -20,7 +20,13 @@ const Prep = {
 };
 window.Prep = Prep;
 
-document.title = CONFIG.ownerName ? `${CONFIG.ownerName}'s job search` : CONFIG.appTitle;
+/* The title: appTitle when organizer.config.js sets it, otherwise "<ownerName>'s job search" when a name is set, otherwise
+   the default appTitle. */
+const ownTitle = (() => {
+  const u = window.ORGANIZER_CONFIG;
+  return !!u && typeof u === "object" && typeof u.appTitle === "string" && !!u.appTitle.trim();
+})();
+document.title = !ownTitle && CONFIG.ownerName ? `${CONFIG.ownerName}'s job search` : CONFIG.appTitle;
 $("#appTitle").textContent = document.title;
 $("#addBtn").addEventListener("click", () => openAdd(section === "next" ? "jobs" : section));
 $("#search").addEventListener("input", (e) => {
@@ -36,19 +42,7 @@ $("#search").addEventListener("keydown", (e) => {
   }
 });
 $("#keysBtn").addEventListener("click", openKeys);
-$("#backupBtn").addEventListener("click", () => {
-  const blob = new Blob([serialize(store)], { type: "text/javascript" });
-  const a = el("a", {
-    href: URL.createObjectURL(blob),
-    download: `${DATA_FILE.replace(/\.js$/, "")}_backup_${TODAY()}.js`,
-  });
-  document.body.append(a);
-  a.click();
-  setTimeout(() => {
-    URL.revokeObjectURL(a.href);
-    a.remove();
-  }, 1000);
-});
+$("#backupBtn").addEventListener("click", downloadBackup);
 $("#restoreBtn").addEventListener("click", openRestore);
 $("#backupNotesBtn").addEventListener("click", () => backupNow(true));
 $("#secondBackupBtn").addEventListener("click", pickSecond);
@@ -74,6 +68,7 @@ if (!fileCopy && !localCopy && !FS_OK)
       const r = await readFileInto();
       if (r === "bad") {
         saveErr = "bad";
+        folderOk = false;
       }
       /* today's copy of the data file, even if nothing gets saved today */
       if (r === "ok") await dailyBackup(lastRaw);
@@ -82,6 +77,8 @@ if (!fileCopy && !localCopy && !FS_OK)
       myResume();
     }
   }
+  /* saving is off: the note about changes the file replaced shows now (with saving on, recordMerge shows it) */
+  if (pendingRecord && pendingRecord.stale.size) setNote(lostNote(pendingRecord.stale.size, ""));
   render();
 })();
 /* Once saving is on, the prep features start (new prep sheets, daily note backups), then every 20 minutes. */
@@ -118,6 +115,7 @@ async function onFocus() {
     const r = await readFileInto();
     if (r === "bad") {
       saveErr = "bad";
+      folderOk = false;
       renderStatus();
       syncPanel();
       return;

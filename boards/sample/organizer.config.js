@@ -2,6 +2,7 @@
 // The full list, with the defaults, is in src/js/00-config.js. Reload the page after a change.
 window.ORGANIZER_CONFIG = {
   // ownerName: "Alex",                                   // page title becomes "Alex's job search"
+  // appTitle: "My job search",                           // or set the title yourself (used even with ownerName)
   // files: { resume: "Alex_Resume.pdf", coverLetter: "Alex_Cover_Letter.pdf" },
   // stageFolders: {                                     // list all seven: a lane you leave out keeps its default
   //   todo: "1 - To apply", applied: "2 - Applied", screen: "2 - Applied", interview: "2 - Applied",

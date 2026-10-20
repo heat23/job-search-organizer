@@ -1,6 +1,10 @@
 // Starting a new board, settings (organizer.config.js), pay blurring, per-folder storage, view-only browsers
-// and safe rendering of guides.
-const { ok, wait, launch, mkpage, report } = require("./lib.js");
+// and safe rendering of guides. The Prep library reads the guides in the folder when Library/_bundle.js is missing or
+// from another tool.
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { ok, wait, launch, mkpage, report, files, TREE } = require("./lib.js");
 const EMPTY = "file://" + process.env.EMPTY_TREE + "/organizer.html";
 (async () => {
   let b;
@@ -247,6 +251,94 @@ const EMPTY = "file://" + process.env.EMPTY_TREE + "/organizer.html";
       ok("S9 no errors", p.errs.length === 0, p.errs.join("|"));
       await ctx.close();
     }
+    // ---- S10: the title: ownerName gives "<name>'s job search"; appTitle set in the config is used as is, even with a name
+    {
+      const ctx = await b.newContext();
+      for (const [config, want] of [
+        [{ appTitle: "Team Search Board" }, "Team Search Board"],
+        [{ ownerName: "Alex", appTitle: "Team Search Board" }, "Team Search Board"],
+        [{ ownerName: "Alex", appTitle: "  " }, "Alex's job search"],
+        [{}, "Job Search Organizer"],
+      ]) {
+        const p = await mkpage(ctx, { config });
+        ok(
+          `S10 title with ${JSON.stringify(config)}`,
+          (await p.title()) === want && (await p.$eval("#appTitle", (e) => e.textContent)) === want,
+          await p.title(),
+        );
+        await p.close();
+      }
+      await ctx.close();
+    }
+    // ---- S11: the Prep library tab shows the guides in the folder once saving is on, when Library/_bundle.js is
+    //      missing or is another tool's (no guides for this page), without coming back to the window; while the read
+    //      is running it says "Loading guides…", never "No guides yet"
+    for (const variant of ["no bundle", "another tool's bundle"])
+      for (const order of ["tab, then saving", "saving, then tab"]) {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jso-lib-"));
+        try {
+          fs.cpSync(TREE, dir, { recursive: true });
+          const bundle = path.join(dir, "Library", "_bundle.js");
+          if (variant === "no bundle") fs.rmSync(bundle);
+          else
+            fs.writeFileSync(
+              bundle,
+              'window.OTHER_TOOL_LIBRARY = { files: { "Library/x.md": "# X" } };\nwindow.ORGANIZER_LIBRARY = { version: 3, items: [] };\n',
+            );
+          const f = files();
+          delete f["Library/_bundle.js"];
+          /* reading a guide takes 300 ms, so the read is still running when the tab is first drawn */
+          const SLOW = `(() => { const MF = window.MemFS.MemFile, g = MF.prototype.getFile;
+            MF.prototype.getFile = async function () {
+              if (window.__slowMd && /\.md$/.test(this.name)) await new Promise((r) => setTimeout(r, 300));
+              return g.call(this); }; window.__slowMd = 1;
+            /* no window focus event reaches the page's handlers (they would re-read the guides too) */
+            window.__focusN = 0;
+            window.addEventListener("focus", (e) => { window.__focusN++; e.stopImmediatePropagation(); }, true); })();`;
+          const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+          const p = await mkpage(ctx, { url: "file://" + dir + "/organizer.html", files: f, init: SLOW });
+          const view = () => p.$eval("#view", (e) => e.innerText);
+          const guides = () => p.$$eval("#view a[data-doc]", (a) => a.map((x) => x.textContent));
+          let before = "";
+          if (order === "tab, then saving") {
+            await p.click("#nav-library");
+            await wait(p, 100);
+            before = await view();
+          }
+          await p
+            .getByRole("button", { name: /Turn on saving/ })
+            .first()
+            .click();
+          if (order === "saving, then tab") {
+            await wait(p, 50);
+            await p.click("#nav-library");
+          }
+          await wait(p, 120);
+          const early = await view();
+          await wait(p, 1000);
+          const g = await guides();
+          const tag = `S11 (${variant}; ${order})`;
+          if (before)
+            ok(`${tag} with saving off the empty Library says so`, /No guides yet/.test(before), before.slice(0, 80));
+          ok(
+            `${tag} while the guides are read it says "Loading guides…"`,
+            /Loading guides/.test(early),
+            early.slice(0, 80),
+          );
+          ok(
+            `${tag} the guides in the folder show within a second, with no focus event`,
+            g.length === 3 &&
+              g.includes("Call scripts") &&
+              !/No guides yet|Loading guides/.test(await view()) &&
+              (await p.evaluate(() => focusRun === null)),
+            JSON.stringify(g),
+          );
+          ok(`${tag} no errors`, p.errs.length === 0, p.errs.join("|"));
+          await ctx.close();
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }
     // ---- S8: the page never talks to the network
     {
       const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });

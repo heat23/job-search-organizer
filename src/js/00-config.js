@@ -3,8 +3,9 @@
      window.ORGANIZER_CONFIG = { ownerName: "Alex", files: { resume: "Alex_Resume.pdf" } };
    It is merged over these defaults. Lane ids (todo, applied, screen…) are fixed; their names, colors and timings are not. */
 const DEFAULT_CONFIG = {
+  /* The page title. Set here, it is used as is, even with ownerName set. */
   appTitle: "Job Search Organizer",
-  /* Optional. Shown in the page title as "<name>'s job search". */
+  /* Optional. The page title becomes "<name>'s job search" (unless appTitle is set too). */
   ownerName: "",
   /* Set only by the live demo page (tools/build-demo.mjs): { repoUrl }. It shows a demo banner in place of the setup steps. */
   demo: null,

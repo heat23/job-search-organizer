@@ -114,11 +114,26 @@ function libGroups() {
   }
   return [...groups.entries()];
 }
-/* Re-read every guide in the folder (new ones included). Runs when a sheet or the Library opens: at most every 3 seconds. */
-let libReadAt = 0;
-async function refreshDocs(force) {
-  if (!FS.ok() || (!force && Date.now() - libReadAt < 3000)) return false;
+/* Re-read every guide in the folder (new ones included). Runs when a sheet or the Library opens (at most every 3
+   seconds unless forced), once saving is on, and when you come back to the window. A read already running is shared.
+   docsVer counts the changes to the guides; libLoaded: a read of the folder's guides has finished (until then an empty
+   Library says "Loading guides…": the bundle may be missing, out of date or from another tool). */
+let libReadAt = 0,
+  docsRead = null,
+  docsVer = 0,
+  libLoaded = false;
+function refreshDocs(force) {
+  if (!FS.ok()) return Promise.resolve(false);
+  if (docsRead) return docsRead;
+  if (!force && Date.now() - libReadAt < 3000) return Promise.resolve(false);
   libReadAt = Date.now();
+  docsRead = readDocs().finally(() => {
+    docsRead = null;
+    libLoaded = true;
+  });
+  return docsRead;
+}
+async function readDocs() {
   let changed = false;
   const paths = [];
   for (const [n, k] of await FS.list("Library")) {
@@ -132,6 +147,7 @@ async function refreshDocs(force) {
       const r = await FS.read(p);
       if (r && ingest(p, r.text)) changed = true;
     }
+  if (changed) docsVer++;
   return changed;
 }
 /* New or changed prep sheets written into the folder since the bundle was made.
