@@ -17,36 +17,21 @@ let dirHandle = null,
   writing = false;
 let localOk = true,
   myLocalOk = true;
-/* This browser's copy is kept together with the bases (see "merging" in store.js), in one entry so another tab always
-   gets a matching pair. When browser storage is full the copy is kept without its bases (they stay in memory for this
-   session; after a reload a card that differs keeps the copy with the higher rev), and the status line says so once.
-   force: write even when nothing changed since the last write (browser storage may have been cleared meanwhile). */
+/* This browser's copy is kept together with its dirty fields (see "merging" in store.js), in one entry so another tab
+   always gets a matching pair. force: write even when nothing changed since the last write (browser storage may have
+   been cleared meanwhile). */
 let lastLocal = "",
-  statusNote = "",
-  basesNoted = false;
+  statusNote = "";
 function setNote(msg) {
   statusNote = msg;
   statusSig = "";
   renderStatus();
 }
 function persistLocal(force) {
-  let text;
-  try {
-    text = JSON.stringify({ ...store, _base: basesOut(store), _prev: prevBases });
-  } catch (e) {
-    text = JSON.stringify(store);
-  }
+  const text = JSON.stringify({ ...store, _dirty: dirtyOut(), ...(legacyLocal ? { _legacy: 1 } : {}) });
   if (text === lastLocal && !(force && lsGet("board", "") !== text)) return localOk;
-  let full = lsSet("board", text);
-  localOk = full || lsSet("board", JSON.stringify(store));
-  lastLocal = full ? text : "";
-  if (localOk) tabBase = copyStore(store);
-  if (localOk && !full && !basesNoted) {
-    basesNoted = true;
-    setNote(
-      "Browser storage is full, so this page keeps its record of what the file held in memory for now. Saving goes on; after a reload, a card that differs from the file keeps the copy with the higher revision.",
-    );
-  }
+  localOk = lsSet("board", text);
+  lastLocal = localOk ? text : "";
   return localOk;
 }
 let gen = 0;
@@ -80,13 +65,13 @@ async function readFileInto() {
   if (!t.trim()) return "missing";
   /* the same text as at the last read or write: nothing to merge */
   if (t === syncedText) return "ok";
-  const rec = { kept: new Set(), took: new Set() };
-  const before = store;
+  let rec;
   try {
     const raw = parseDataText(t);
+    const n = normalize(raw);
     extras = Object.create(null);
     keepExtras(raw);
-    store = mergeIn(store, normalize(raw), rec);
+    rec = mergeFileIn(n);
     persistLocal();
     checkWrapper(t);
     syncedText = t;
@@ -94,16 +79,24 @@ async function readFileInto() {
     return "bad";
   }
   if (pendingRecord) {
-    const pr = pendingRecord;
+    for (const x of pendingRecord) rec.add(x);
     pendingRecord = null;
-    for (const k of pr.rec.kept) rec.kept.add(k);
-    for (const k of pr.rec.took) rec.took.add(k);
-    await recordMerge(rec, t, pr.browser);
-  } else await recordMerge(rec, t, before);
+  }
+  await recordMerge(rec, t);
   return "ok";
 }
-/* What a merge kept or took is recorded: the other side's version goes to backups/ (the last 10 of each kind are
-   kept) and the status line says so. Never a dialog: nothing is blocked. */
+/* The file differs from this browser's copy (a change waiting, a value kept over the file's, an edit taken without a
+   bump): it needs a write. */
+function fileBehind() {
+  if (Object.keys(dirtyF).length || !lastRaw.trim()) return true;
+  try {
+    return collectionsOnly(normalize(parseDataText(lastRaw))) !== collectionsOnly(store);
+  } catch (e) {
+    return true;
+  }
+}
+/* What a merge kept is recorded: the file as it was goes to backups/ (the last 10 are kept) and the status line says
+   so, one line per merge. Never a dialog: nothing is blocked. */
 const KEEP_BACKUPS = 10;
 const hhmm2 = () => new Date().toTimeString().slice(0, 5).replace(":", "");
 async function pruneBackups(bdir, re, keep) {
@@ -136,28 +129,16 @@ async function saveBackup(kind, text) {
     return "";
   }
 }
-const cards = (n) => `${n} card${n === 1 ? "" : "s"}`;
-async function recordMerge(rec, fileText, browserStore) {
-  const msg = [];
-  if (rec.kept.size) {
-    const name = await saveBackup("kept", fileText);
-    msg.push(
-      `Kept your version of ${cards(rec.kept.size)}; ` +
-        (name
-          ? `the file's version is saved in backups/${name}.`
-          : "the file's version wasn't saved (no folder access)."),
-    );
-  }
-  if (rec.took.size) {
-    const name = await saveBackup("browser", serialize(browserStore));
-    msg.push(
-      `Took the file's version of ${cards(rec.took.size)}; ` +
-        (name
-          ? `this browser's version is saved in backups/${name}.`
-          : "this browser's version wasn't saved (no folder access)."),
-    );
-  }
-  if (msg.length) setNote(msg.join(" "));
+const many = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+/* rec: the set of "c:id\tfield" kept over the file's value */
+async function recordMerge(rec, fileText) {
+  if (!rec.size) return;
+  const cardsN = new Set([...rec].map((x) => x.split("\t")[0])).size;
+  const name = await saveBackup("kept", fileText);
+  setNote(
+    `Kept your version of ${many(rec.size, "field")} on ${many(cardsN, "card")}; ` +
+      (name ? `the file's version is in backups/${name}.` : "the file's version wasn't saved (no folder access)."),
+  );
 }
 let wrapperWarned = "";
 function checkWrapper(t) {
@@ -190,10 +171,10 @@ async function writeFile() {
       /* What is written is a copy taken now: an edit made while the file is being written is not in the file, so it
          must not count as what the file holds. Right before writing, the file is checked again: when another tool
          wrote it since the read, it is merged first (up to three times). */
-      let snap, w, fh;
+      let snap, snapDirty, w, fh;
       for (let tries = 0; ; tries++) {
         snap = copyStore(store);
-        revsForWrite(snap);
+        snapDirty = copyDirty(dirtyF);
         fh = await dirHandle.getFileHandle(DATA_FILE, { create: true });
         w = await fh.createWritable();
         if (tries >= 3 || !lastMeta || metaOf(await fh.getFile()) === lastMeta) break;
@@ -207,7 +188,7 @@ async function writeFile() {
       await w.close();
       syncedText = text;
       lastMeta = metaOf(await fh.getFile());
-      setBases(snap);
+      cleanWritten(snap, snapDirty);
       persistLocal();
       lastSaved = new Date();
       saveErr = "";
@@ -452,7 +433,7 @@ async function fileJobs(full) {
               continue;
             }
           }
-          setRec("jobs", id, edited(store.jobs[id], { folder: null, filesDeletedAt: nowIso() }));
+          applyEdit("jobs", id, { folder: null, filesDeletedAt: nowIso() });
           filedSig.delete(id);
           persist();
         }
@@ -490,7 +471,7 @@ async function fileJobs(full) {
           continue;
         }
         if (store.jobs[id].folder !== target) {
-          setRec("jobs", id, edited(store.jobs[id], { folder: target }));
+          applyEdit("jobs", id, { folder: target });
           persist();
         }
         filedSig.set(id, fileSig(store.jobs[id]));
@@ -511,9 +492,9 @@ async function fileJobs(full) {
     showToast(
       `Didn't move the folder for ${bad.join("; ")}. A job's "folder" must be its own folder, such as “${STAGE_DIR.todo}/Acme - Engineer”. Nothing was moved.`,
     );
-  else if (failed.length && !lastUndo)
+  else if (failed.length && !undoShown)
     showToast(`Couldn't file the folder for ${failed.join(", ")}. Nothing was lost; check the stage folders.`);
-  else if (moved.length > 1 && !lastUndo) showToast(`Filed ${moved.length} job folders by stage.`);
+  else if (moved.length > 1 && !undoShown) showToast(`Filed ${moved.length} job folders by stage.`);
   if (fileAgain) {
     fileAgain = false;
     setTimeout(fileJobs, 50);

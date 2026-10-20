@@ -17,7 +17,7 @@ const focus = async (p, extra = 200) => {
 const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n";
 const disk = async (p) => parseBoard(await p.evaluate(() => window.__get("board_data.js")));
 const answers = (p) => p.evaluate(() => window.__get("Library/My_answers.md").then((t) => t || ""));
-/* the assistant edits one record on disk (rev + 1, as AGENTS.md asks) */
+/* the assistant edits one record on disk (revs + 1 for each field it changes, as AGENTS.md asks) */
 const editOnDisk = (p, id, patch) =>
   p.evaluate(
     ([i, pt]) =>
@@ -26,7 +26,12 @@ const editOnDisk = (p, id, patch) =>
         d.jobs[i] = {
           ...d.jobs[i],
           ...pt,
-          rev: (d.jobs[i].rev || 0) + 1,
+          revs: ((r, q) => {
+            const v = { ...(r.revs || {}) };
+            for (const k of Object.keys(q))
+              if (JSON.stringify(r[k] ?? null) !== JSON.stringify(q[k] ?? null)) v[k] = (v[k] || 0) + 1;
+            return v;
+          })(d.jobs[i], pt),
           updatedAt: new Date().toISOString(),
           changedBy: "assistant",
         };

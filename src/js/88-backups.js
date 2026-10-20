@@ -210,11 +210,12 @@ async function startup() {
 /* ================= Restore a backup… =================
    Lists backups/board_data_*.js (the daily copies, the versions a merge kept out, the copies saved before a restore),
    or takes any .js file you pick. After a confirm, the data file as it is now goes to
-   backups/board_data_before_restore_<time>.js, then every record of the backup that differs from the board's becomes
-   the board's next revision (rev = the current rev + 1), so it wins everywhere: the file, other tabs, the next merge.
-   Cards added since the backup are removed (Restore brings one back). Then every job folder is filed by stage again.
-   The toast can undo it the same way. Copying an old file over board_data.js does not restore anything: its revs are
-   not newer, so the page keeps your version (and saves the copied file in backups/). */
+   backups/board_data_before_restore_<time>.js, then every field of the backup that differs from the board's becomes a
+   new edit (its revision goes up), so it wins everywhere: the file, other tabs, the next merge. Cards added since the
+   backup are removed (Restore brings one back). Then every job folder is filed by stage again. The toast (only the
+   toast, not Ctrl+Z) can undo it: Undo puts back the fields the restore changed that haven't changed since, and keeps
+   later changes. Copying an old file over board_data.js does not restore anything: its revisions are not newer, so the
+   page keeps your version (and saves the copied file in backups/). */
 const plural = (n, noun) => `${n} ${n === 1 ? noun : noun === "person" ? "people" : noun + "s"}`;
 function backupInfo(text) {
   try {
@@ -247,26 +248,48 @@ const whenLabel = (t) =>
     hour: "numeric",
     minute: "2-digit",
   });
-/* the board's records replaced by `src` (see the top) */
+/* The board's records set to `src`'s (see the top). Returns, for Undo, each changed field with its value before and its
+   revision after. */
 function replaceStore(src) {
-  const next = emptyStore();
+  const undo = [];
   for (const c of COLLS)
     for (const id of new Set([...Object.keys(store[c]), ...Object.keys(src[c])])) {
-      const old = Object.hasOwn(store[c], id) ? store[c][id] : null;
+      const old = has(c, id) ? store[c][id] : null;
       const r = Object.hasOwn(src[c], id) ? src[c][id] : null;
-      if ((!r && old.deleted) || (r && old && sameContent(r, old))) {
-        next[c][id] = old;
-        continue;
-      }
-      const want = r ? { ...r } : { ...old, deleted: true, removedAt: nowIso() };
-      /* a card removed again by the restore: its files wait the full time in the removed folder again */
-      if (r && r.deleted && old && !old.deleted) want.removedAt = nowIso();
-      next[c][id] = clean({ ...want, rev: revOf(old) + 1, updatedAt: nowIso(), changedBy: "you" });
+      let patch;
+      if (r) {
+        patch = {};
+        for (const f of fieldsOf(old, r)) patch[f] = r[f];
+        /* a card removed again by the restore: its files wait the full time in the removed folder again */
+        if (r.deleted && old && !old.deleted) patch.removedAt = nowIso();
+      } else if (old && !old.deleted) patch = { deleted: true, removedAt: nowIso() };
+      else continue;
+      for (const f of applyEdit(c, id, patch)) undo.push([c, id, f, old ? old[f] : undefined, rv(store[c][id], f)]);
     }
-  store = next;
   persist();
   render();
   if (openRef) refreshDrawer();
+  return undo;
+}
+/* Undo of a restore: each field it changed goes back, unless it changed again since (that later change is kept).
+   Returns how many were kept. */
+function undoRestore(list) {
+  const patches = new Map();
+  let later = 0;
+  for (const [c, id, f, v, n] of list) {
+    if (!has(c, id) || rv(store[c][id], f) !== n) {
+      later++;
+      continue;
+    }
+    const k = c + ":" + id;
+    if (!patches.has(k)) patches.set(k, [c, id, {}]);
+    patches.get(k)[2][f] = v;
+  }
+  for (const [c, id, p] of patches.values()) applyEdit(c, id, p);
+  persist();
+  render();
+  if (openRef) refreshDrawer();
+  return later;
 }
 /* after a restore or its undo: write it, then file every job folder by its restored stage and list the folders again */
 async function afterReplace() {
@@ -302,14 +325,21 @@ async function restoreBackup(text, label) {
     showToast("Couldn't save a copy of the current board first, so nothing was restored.");
     return false;
   }
-  const before = copyStore(store);
-  replaceStore(info.data);
+  const undo = replaceStore(info.data);
   await afterReplace();
-  showToast(`Restored the copy from ${label} (${info.counts}). Your board as it was is in backups/.`, async () => {
-    replaceStore(before);
-    await afterReplace();
-    showToast("Restore undone.");
-  });
+  showToast(
+    `Restored the copy from ${label} (${info.counts}). Your board as it was is in backups/.`,
+    async () => {
+      const later = undoRestore(undo);
+      await afterReplace();
+      showToast(
+        later
+          ? `Restore undone. Kept ${later} change${later === 1 ? "" : "s"} made since the restore.`
+          : "Restore undone.",
+      );
+    },
+    true,
+  );
   return true;
 }
 async function openRestore() {

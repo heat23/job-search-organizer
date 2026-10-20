@@ -24,16 +24,26 @@ const boardText = fs.readFileSync(path.join(TREE, "board_data.js"), "utf8");
 const parseBoard = (t) => JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
 const data = parseBoard(boardText);
 
-/* An edit the way AGENTS.md asks for it: every record of `d` that differs from `from` (default: the sample) gets
-   rev = its old rev + 1, so the page takes it. Returns d. */
+/* An edit the way AGENTS.md asks for it: every field of `d` that differs from `from` (default: the sample) gets
+   revs[field] + 1, so the page takes it. Returns d. */
 function withRevs(d, from = data) {
   for (const c of ["jobs", "hunters", "people", "todos", "plan"])
-    for (const id of Object.keys(d[c] || {})) {
-      const old = from[c] && from[c][id];
-      if (!old || JSON.stringify(old) !== JSON.stringify(d[c][id]))
-        d[c][id] = { ...d[c][id], rev: ((old && old.rev) || 0) + 1 };
-    }
+    for (const id of Object.keys(d[c] || {})) d[c][id] = bumped((from[c] || {})[id], d[c][id]);
   return d;
+}
+/* `next` (a record) with revs + 1 for each field that differs from `old` */
+function bumped(old, next) {
+  const revs = { ...((old && old.revs) || {}), ...(next.revs || {}) };
+  let n = 0;
+  for (const k of new Set([...Object.keys(old || {}), ...Object.keys(next)]))
+    if (
+      !["revs", "updatedAt", "changedBy"].includes(k) &&
+      JSON.stringify(old?.[k] ?? null) !== JSON.stringify(next[k] ?? null)
+    ) {
+      revs[k] = ((old && old.revs && old.revs[k]) || 0) + 1;
+      n++;
+    }
+  return n ? { ...next, revs } : next;
 }
 /* The files the fake folder starts with: the tree, plus a placeholder résumé and cover letter in each job's folder */
 function files(extra, text) {
@@ -109,6 +119,7 @@ module.exports = {
   boardText,
   parseBoard,
   withRevs,
+  bumped,
   ok,
   results,
   wait,

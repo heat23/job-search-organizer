@@ -71,18 +71,13 @@ if (!fileCopy && !localCopy && !FS_OK)
       canWrite = false;
     }
     if (canWrite) {
-      const before = collectionsOnly(store);
       const r = await readFileInto();
       if (r === "bad") {
         saveErr = "bad";
       }
       /* today's copy of the data file, even if nothing gets saved today */
       if (r === "ok") await dailyBackup(lastRaw);
-      if (
-        r !== "bad" &&
-        (!fileCopy || collectionsOnly(store) !== collectionsOnly(fileCopy) || before !== collectionsOnly(store))
-      )
-        writeFile();
+      if (r !== "bad" && fileBehind()) writeFile();
       setTimeout(() => fileJobs(true), 300);
       myResume();
     }
@@ -144,7 +139,7 @@ async function onFocus() {
     } else renderStatus();
     /* The file is missing something this browser has (a tool wrote back an older or partial copy, or a record was merged
        field by field): write it back. */
-    if (r === "ok" && lastRaw && collectionsOnly(normalize(parseDataText(lastRaw))) !== collectionsOnly(store)) {
+    if (r === "ok" && lastRaw && fileBehind()) {
       gen++;
       dirty = true;
       clearTimeout(saveTimer);
@@ -170,24 +165,13 @@ window.addEventListener("focus", () => {
   focusRun = onFocus();
 });
 /* Keep two open copies of the page in step. An open panel shows the other tab's change like a change from the folder.
-   The other tab's records merge with this tab's by mergeTab, and a newer base it read from the file is taken over, so a
-   change made in either tab counts as yours when the file is merged next. */
+   The other tab's copy merges with this tab's field by field, with the same rule as the data file (see "merging" in
+   store.js): the higher revision wins, a tie goes to the later copy (the other tab's), and a change either tab hasn't
+   written to the file yet (its dirty fields travel with the copy) is never lost. */
 function mergeOtherTab(raw) {
-  const theirs = normalize(raw);
-  const tb = basesIn(raw && raw._base, theirs);
-  const S = tabBase || emptyStore();
-  const next = copyStore(store);
-  for (const c of COLLS)
-    for (const id of Object.keys(theirs[c]))
-      next[c][id] = mergeTab(
-        hasRec(next, c, id) ? next[c][id] : null,
-        theirs[c][id],
-        hasRec(S, c, id) ? S[c][id] : bases[c + ":" + id],
-      );
-  for (const [k, b] of Object.entries(tb)) if (!bases[k] || revOf(b) > revOf(bases[k])) setBase(k, b);
-  if (Object.keys(tb).length) basesKnown = true;
-  tabBase = theirs;
-  store = next;
+  const m = mergeStores(store, dirtyF, normalize(raw), dirtyIn(raw && raw._dirty), false);
+  store = m.store;
+  dirtyF = m.dirty;
 }
 window.addEventListener("storage", (e) => {
   if (e.key !== lsKey("board") || !e.newValue) return;

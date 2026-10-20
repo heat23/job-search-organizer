@@ -18,7 +18,7 @@ const focus = async (p, extra = 200) => {
 const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(withRevs(d), null, 1) + ";\n";
 const copy = () => JSON.parse(JSON.stringify(data));
 const disk = async (p) => parseBoard(await p.evaluate(() => window.__get("board_data.js")));
-/* an assistant edits one record in board_data.js on disk (rev + 1); `ms` is its updatedAt relative to now (only shown) */
+/* an assistant edits one record in board_data.js on disk (revs + 1 for each field it changes); `ms` is its updatedAt relative to now (only shown) */
 async function assistantEdit(p, coll, id, patch, ms = 2000) {
   await p.evaluate(
     ([c, i, pt, off]) =>
@@ -27,7 +27,12 @@ async function assistantEdit(p, coll, id, patch, ms = 2000) {
         d[c][i] = {
           ...d[c][i],
           ...pt,
-          rev: (d[c][i].rev || 0) + 1,
+          revs: ((r, q) => {
+            const v = { ...(r.revs || {}) };
+            for (const k of Object.keys(q))
+              if (JSON.stringify(r[k] ?? null) !== JSON.stringify(q[k] ?? null)) v[k] = (v[k] || 0) + 1;
+            return v;
+          })(d[c][i], pt),
           updatedAt: new Date(Date.now() + off).toISOString(),
           changedBy: "assistant",
         };
@@ -327,7 +332,12 @@ const REPORT = 'details.mine.ask[data-k^="prep:lumenfield::Who would I report to
             d.jobs[i] = {
               ...d.jobs[i],
               ...t,
-              rev: (d.jobs[i].rev || 0) + 1,
+              revs: ((r, q) => {
+                const v = { ...(r.revs || {}) };
+                for (const k of Object.keys(q))
+                  if (JSON.stringify(r[k] ?? null) !== JSON.stringify(q[k] ?? null)) v[k] = (v[k] || 0) + 1;
+                return v;
+              })(d.jobs[i], t),
               updatedAt: new Date(Date.now() + off).toISOString(),
               changedBy: "assistant",
             };
@@ -373,7 +383,7 @@ const REPORT = 'details.mine.ask[data-k^="prep:lumenfield::Who would I report to
       }
       ok(
         "M4 and the conflict is recorded: the file's version in backups/ and a status line",
-        /Kept your version of 1 card; the file's version is saved in backups\/board_data_kept_/.test(
+        /Kept your version of 1 field on 1 card; the file's version is in backups\/board_data_kept_/.test(
           await p.$eval("#status", (n) => n.textContent),
         ) && (await p.evaluate(() => (window.__ls("backups") || []).some((n) => /^board_data_kept_/.test(n)))),
         await p.$eval("#status", (n) => n.textContent),
@@ -426,7 +436,6 @@ const REPORT = 'details.mine.ask[data-k^="prep:lumenfield::Who would I report to
       d.jobs.quillstone = {
         ...d.jobs.quillstone,
         location: "Remote (assistant, while closed)",
-        rev: d.jobs.quillstone.rev + 1,
         updatedAt: new Date(Date.now() + 5000).toISOString(),
         changedBy: "assistant",
       };

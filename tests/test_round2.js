@@ -38,7 +38,7 @@ async function book(p, id, type) {
   await p.keyboard.press("Escape");
   await wait(p, 200);
 }
-/* an assistant edits one record in board_data.js on disk (rev + 1, changedBy assistant) */
+/* an assistant edits one record in board_data.js on disk (revs + 1 for each field it changes, changedBy assistant) */
 async function assistantEdit(p, coll, id, patch) {
   await p.evaluate(
     ([c, i, pt]) => {
@@ -47,7 +47,12 @@ async function assistantEdit(p, coll, id, patch) {
         d[c][i] = {
           ...d[c][i],
           ...pt,
-          rev: (d[c][i].rev || 0) + 1,
+          revs: ((r, q) => {
+            const v = { ...(r.revs || {}) };
+            for (const k of Object.keys(q))
+              if (JSON.stringify(r[k] ?? null) !== JSON.stringify(q[k] ?? null)) v[k] = (v[k] || 0) + 1;
+            return v;
+          })(d[c][i], pt),
           updatedAt: new Date(Date.now() + 2000).toISOString(),
           changedBy: "assistant",
         };

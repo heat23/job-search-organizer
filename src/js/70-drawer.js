@@ -535,6 +535,7 @@ document.addEventListener("keydown", (e) => {
     const u = lastUndo;
     $("#toastRoot").textContent = "";
     lastUndo = null;
+    undoShown = false;
     u();
   }
   if (e.key === "/" && !drawerOpen && !typing && section !== "next") {

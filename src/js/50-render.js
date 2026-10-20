@@ -28,16 +28,19 @@ function goSection(s) {
   window.scrollTo(0, 0);
 }
 
-/* ================= toast with undo (hover pauses it; Ctrl/⌘+Z undoes) ================= */
-let toastTimer = null;
-function showToast(msg, undo) {
+/* ================= toast with undo (hover pauses it; Ctrl/⌘+Z undoes, unless toastOnly) ================= */
+let toastTimer = null,
+  undoShown = false;
+function showToast(msg, undo, toastOnly) {
   const root = $("#toastRoot");
   root.textContent = "";
   clearTimeout(toastTimer);
-  lastUndo = undo || null;
+  lastUndo = (!toastOnly && undo) || null;
+  undoShown = !!undo;
   const hide = () => {
     root.textContent = "";
     lastUndo = null;
+    undoShown = false;
   };
   const t = el(
     "div",
@@ -48,9 +51,8 @@ function showToast(msg, undo) {
           type: "button",
           text: "Undo",
           onclick: () => {
-            const u = lastUndo;
             hide();
-            if (u) u();
+            undo();
           },
         })
       : null,
