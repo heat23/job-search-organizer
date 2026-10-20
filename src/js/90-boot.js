@@ -184,7 +184,7 @@ function mergeOtherTab(raw) {
         theirs[c][id],
         hasRec(S, c, id) ? S[c][id] : bases[c + ":" + id],
       );
-  for (const [k, b] of Object.entries(tb)) if (!bases[k] || revOf(b) > revOf(bases[k])) bases[k] = b;
+  for (const [k, b] of Object.entries(tb)) if (!bases[k] || revOf(b) > revOf(bases[k])) setBase(k, b);
   if (Object.keys(tb).length) basesKnown = true;
   tabBase = theirs;
   store = next;

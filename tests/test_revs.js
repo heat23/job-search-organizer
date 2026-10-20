@@ -1,8 +1,10 @@
 // The merge protocol: revision counters. Every record has `rev`; whoever changes a record sets rev = old rev + 1, and the
 // page keeps each record's base (the record as the file held it at the last read or write). A file record with a higher
 // rev than its base is a real edit (merged field by field; a field both sides changed keeps the person's value). Any
-// other difference (an older copy written back, an edit without a new rev, a record missing from the file) keeps the
-// person's version, saves the file's version to backups/ and says so in the status line. Clocks play no part.
+// lower rev (an older copy written back) or a record missing from the file keeps the
+// person's version, saves the file's version to backups/ and says so in the status line; a record with the base's rev
+// but other fields is an edit made on the current file without a new rev, and is applied (except fields you changed).
+// Clocks play no part.
 // The scenarios come from the adversarial reviews (stale write-backs, re-stamped whole files, A→B→A toggles, clock skew,
 // conflicts, unbumped edits, two tabs, storage full or cleared, Restore and Undo with folders, migration).
 //   ONLY=V1,V5 node tests/test_revs.js   runs only those blocks (SAMPLE_TREE must be set, see run.mjs)
@@ -93,10 +95,13 @@ const KEPT =
           `V1 (${variant}) the assistant's edit to another card is taken`,
           st.quillstone.location === "Remote (assistant)" && dk.quillstone.location === "Remote (assistant)",
         );
-        ok(
-          `V1 (${variant}) its stale change to the same card is not applied`,
-          st.harborlight.pay !== "Stale copy's pay" && dk.harborlight.pay !== "Stale copy's pay",
-        );
+        /* with notes typed, that copy has the same rev as your save (Remove and Restore also file the folder, so a higher
+           one): its own new field is taken, its older values are not */
+        if (variant === "notes typed")
+          ok(
+            "V1 (notes typed) the copy's new field on the same card is taken, its older values are not",
+            st.harborlight.pay === "Stale copy's pay" && dk.harborlight.pay === "Stale copy's pay",
+          );
         if (variant === "notes typed") {
           const s = await status(p);
           ok("V1 the status line says so and names the backup", KEPT.test(s) && /of 1 card;/.test(s), s);
@@ -309,26 +314,50 @@ const KEPT =
       ok("V5 no errors", !p.errs.length, p.errs.join("|"));
       await ctx.close();
     }
-    // ---- V6: an edit without a new rev is not applied (with or without a new updatedAt), and that is recorded
+    // ---- V6: an edit without a new rev: applied when made on the current file (except fields you changed, recorded),
+    //      never when it is an older copy
     if (want("V6")) {
       const { ctx, p } = await open();
+      const rev0 = (await disk(p)).jobs.orchardline.rev;
       await write(p, (d) => (d.jobs.orchardline = A(d.jobs.orchardline, { pay: "$190k (no rev)" }, false)));
       await focus(p, 1500);
+      const dk = (await disk(p)).jobs.orchardline;
       ok(
-        "V6 an assistant edit that kept the old rev is not applied (page and file)",
-        (await p.evaluate(() => store.jobs.orchardline.pay)) !== "$190k (no rev)" &&
-          (await disk(p)).jobs.orchardline.pay !== "$190k (no rev)",
+        "V6 an assistant edit on the current file without a new rev is applied, and written back with rev + 1",
+        (await p.evaluate(() => store.jobs.orchardline.pay)) === "$190k (no rev)" &&
+          dk.pay === "$190k (no rev)" &&
+          dk.rev === rev0 + 1,
+        JSON.stringify([dk.pay, dk.rev, rev0]),
       );
-      ok("V6 the status line says so", KEPT.test(await status(p)), await status(p));
-      const kb = await backups(p, "^board_data_kept_");
-      const kt = kb.length ? await p.evaluate((n) => window.__get("backups/" + n), kb[0]) : "";
-      ok("V6 and the file with that edit is in backups/", kt.includes("$190k (no rev)"));
-      await write(p, (d) => (d.jobs.orchardline = A(d.jobs.orchardline, { pay: "$190k (rev + 1)" })));
-      await focus(p, 1200);
+      ok("V6 and nothing is recorded", !/Kept your version/.test(await status(p)), await status(p));
+      /* you changed notes (not written yet); the assistant changes notes and pay without a new rev */
+      await p.evaluate(() => {
+        upd("jobs", "fernhill", { notes: "Mine, unsaved" });
+        clearTimeout(saveTimer);
+      });
+      await write(
+        p,
+        (d) => (d.jobs.fernhill = A(d.jobs.fernhill, { notes: "Theirs (no rev)", pay: "$180k (no rev)" }, false)),
+      );
+      await focus(p, 1500);
+      const f = (await disk(p)).jobs.fernhill;
       ok(
-        "V6 the same edit with rev + 1 is taken",
-        (await p.evaluate(() => store.jobs.orchardline.pay)) === "$190k (rev + 1)" &&
-          (await disk(p)).jobs.orchardline.pay === "$190k (rev + 1)",
+        "V6 without a new rev, a field you changed keeps your value and the other field is taken",
+        f.notes === "Mine, unsaved" && f.pay === "$180k (no rev)",
+        JSON.stringify([f.notes, f.pay]),
+      );
+      ok("V6 that conflict is recorded", KEPT.test(await status(p)), await status(p));
+      /* an older copy written back without new revs, after your saved edit: not applied */
+      const t0 = await raw(p);
+      await p.evaluate(() => upd("jobs", "harborlight", { notes: "Saved after the read" }));
+      await wait(p, 1200);
+      await write(p, (d) => (d.jobs.quillstone = A(d.jobs.quillstone, { location: "From the older copy" }, false)), t0);
+      await focus(p, 1500);
+      const dk2 = (await disk(p)).jobs;
+      ok(
+        "V6 an older copy without new revs never undoes your saved edit (its edit on an untouched card is applied)",
+        dk2.harborlight.notes === "Saved after the read" && dk2.quillstone.location === "From the older copy",
+        JSON.stringify([dk2.harborlight.notes, dk2.quillstone.location]),
       );
       /* a stamp-only rewrite (updatedAt and changedBy only, same revs) is quietly ignored: nothing to keep */
       await p.evaluate(() => setNote(""));
@@ -824,12 +853,134 @@ const KEPT =
       await write(Ta, (d) => (d.jobs.quillstone = A(d.jobs.quillstone, { location: "STALE ASSISTANT" })), tStale);
       await focus(Ta, 1500);
       const dk2 = (await disk(Ta)).jobs;
+      /* the restored card keeps the restore. quillstone: that copy raised the rev it read, so it has the same rev as the
+         write made during the restore and counts as an edit on the current file (two assistant writes: the later wins) */
       ok(
-        "V14 an older copy written back after the restore changes nothing",
-        dk2.fernhill.notes === data.jobs.fernhill.notes && dk2.quillstone.location === "ASSISTANT during restore",
+        "V14 an older copy written back after the restore doesn't undo the restore",
+        dk2.fernhill.notes === data.jobs.fernhill.notes && dk2.quillstone.location === "STALE ASSISTANT",
         JSON.stringify([dk2.fernhill.notes, dk2.quillstone.location]),
       );
       ok("V14 no errors", !Ta.errs.length && !Tb.errs.length, Ta.errs.concat(Tb.errs).join("|"));
+      await ctx.close();
+    }
+    // ---- V15: every change the page writes raises rev (edits, filing a folder, another tab's change, Restore, Undo,
+    //      an edit taken without a new rev), so an older copy always has a lower rev than the base
+    if (want("V15")) {
+      const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+      const LOG = `(() => { const M = window.MemFS.MemFile.prototype, cw = M.createWritable;
+        window.__log = [];
+        M.createWritable = async function () { const w = await cw.call(this);
+          if (this.name === "board_data.js") { const wr = w.write; w.write = async (x) => { if (typeof x === "string") window.__log.push(["page", x]); return wr.call(w, x); }; }
+          return w; };
+        const put = window.__put; window.__put = (q, t) => { if (q === "board_data.js") window.__log.push(["other", t]); return put(q, t); }; })();`;
+      const Ta = await mkpage(ctx, { connect: true, init: LOG });
+      await wait(Ta, 1500);
+      const Tb = await mkpage(ctx, {});
+      await wait(Tb, 600);
+      await Ta.evaluate(() => upd("jobs", "fernhill", { notes: "an edit" }));
+      await wait(Ta, 1200);
+      await Ta.evaluate(() => moveCard("jobs", "brightwell_search", "applied")); // files its folder: folder changes too
+      await wait(Ta, 2000);
+      await Tb.evaluate(() => upd("jobs", "quillstone", { notes: "from tab B" }));
+      await wait(Ta, 1500);
+      await write(Ta, (d) => (d.jobs.orchardline = A(d.jobs.orchardline, { pay: "no rev" }, false)));
+      await focus(Ta, 1500);
+      await Ta.evaluate(() => openRestore());
+      await wait(Ta, 1200);
+      const row = Ta.locator(".drawer.restore .rrow", { hasText: /board_data_\d{4}-\d{2}-\d{2}\.js/ }).first();
+      await row.getByRole("button", { name: "Restore…" }).click();
+      await row.getByRole("button", { name: "Restore", exact: true }).click();
+      await wait(Ta, 3000);
+      await Ta.locator("#toastRoot button", { hasText: "Undo" }).click();
+      await wait(Ta, 3000);
+      const log = await Ta.evaluate(() => window.__log);
+      const bad = [];
+      const C = ["jobs", "hunters", "people", "todos", "plan"];
+      const body = (r) =>
+        JSON.stringify(
+          Object.fromEntries(
+            Object.entries(r)
+              .filter(([k]) => !["rev", "updatedAt", "changedBy"].includes(k))
+              .sort(),
+          ),
+        );
+      for (let i = 1; i < log.length; i++) {
+        if (log[i][0] !== "page") continue;
+        const a = parseBoard(log[i - 1][1]),
+          z = parseBoard(log[i][1]);
+        for (const c of C)
+          for (const [id, r] of Object.entries(z[c])) {
+            const o = a[c][id];
+            if (o && body(o) !== body(r) && !(r.rev > o.rev)) bad.push(`${i} ${c}:${id} ${o.rev}->${r.rev}`);
+            if (o && r.rev < o.rev) bad.push(`${i} ${c}:${id} went down ${o.rev}->${r.rev}`);
+          }
+      }
+      const writes = log.filter((x) => x[0] === "page").length;
+      ok(
+        `V15 every record a page write changed has a higher rev (${writes} writes checked)`,
+        writes >= 6 && !bad.length,
+        bad.join(", "),
+      );
+      ok("V15 no errors", !Ta.errs.length && !Tb.errs.length, Ta.errs.concat(Tb.errs).join("|"));
+      await ctx.close();
+    }
+    // ---- V16: two rounds with the same section title, then the first is removed: no box shows or overwrites the other
+    //      round's answer (fresh keys; both old answers under "Saved answers from earlier versions")
+    if (want("V16")) {
+      const Q = "### Who would I report to? {.ask}";
+      const SEC = `## Questions to ask them\n\n${Q}\n`;
+      const { ctx, p } = await open({
+        extra: { "Job notes/lumenfield/prep.md": `# L\n\n${SEC}\n## What you sent them\n\nx\n\n${SEC}` },
+      });
+      const boxes = () => p.$$eval("#drawerRoot details.mine.ask textarea", (t) => t.map((x) => x.value));
+      const reopen = async () => {
+        await p.keyboard.press("Escape");
+        await wait(p, 100);
+        await p.keyboard.press("Escape");
+        await wait(p, 300);
+        await p.evaluate(() => openDrawer("jobs", "lumenfield"));
+        await wait(p, 1200);
+      };
+      await p.evaluate(() => openDrawer("jobs", "lumenfield"));
+      await wait(p, 1200);
+      const tas = p.locator("#drawerRoot details.mine.ask textarea");
+      await tas.nth(0).fill("ROUND 1: Dana");
+      await tas.nth(1).fill("ROUND 2: Lee");
+      await wait(p, 1800);
+      await p.keyboard.press("Escape");
+      await wait(p, 100);
+      await p.keyboard.press("Escape");
+      await wait(p, 300);
+      await p.evaluate(
+        (t) => window.__put("Job notes/lumenfield/prep.md", t),
+        `# L\n\n## What you sent them\n\nx\n\n${SEC}`,
+      );
+      await focus(p, 600);
+      await p.evaluate(() => openDrawer("jobs", "lumenfield"));
+      await wait(p, 1200);
+      const bx = await boxes();
+      const earlier = await p.$$eval("#p-earlier .hq.earlier", (d) => d.length);
+      ok(
+        "V16 after the first same-titled round is removed, the remaining box is empty",
+        JSON.stringify(bx) === '[""]',
+        JSON.stringify(bx),
+      );
+      ok("V16 and both earlier answers are under earlier versions", earlier === 2, String(earlier));
+      await tas.nth(0).fill("ROUND 3: skip-level");
+      await wait(p, 1800);
+      const md = await p.evaluate(() => window.__get("Library/My_answers.md"));
+      ok(
+        "V16 typing there overwrites neither earlier answer",
+        ["ROUND 1: Dana", "ROUND 2: Lee", "ROUND 3: skip-level"].every((x) => md.includes(x)),
+        md.slice(-300),
+      );
+      await reopen();
+      ok(
+        "V16 the new answer stays in its box",
+        JSON.stringify(await boxes()) === '["ROUND 3: skip-level"]',
+        JSON.stringify(await boxes()),
+      );
+      ok("V16 no errors", !p.errs.length, p.errs.join("|"));
       await ctx.close();
     }
   } catch (e) {

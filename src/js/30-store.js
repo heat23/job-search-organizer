@@ -86,8 +86,11 @@ function normalize(src) {
    - F.rev > base.rev: the file has a real new edit. Per field, whichever side changed it since the base wins; a field
      both sides changed to different values keeps your value (a conflict, recorded). The result's rev is the higher of
      the two, plus 1 when your changes still have to be written.
-   - F.rev <= base.rev while F differs from the base: an older copy written back, or an edit made without a new rev.
-     Every field keeps your value and is written back (recorded).
+   - F.rev < base.rev: an older copy written back (the page raises rev on every change it writes, so a copy read
+     before that has a lower rev). Every field keeps your value and is written back (recorded).
+   - F.rev = base.rev with other fields: an edit made on the current version without a new rev. Its fields are taken,
+     except fields you changed since the base and fields set back to their value before the base's last change (a copy
+     read earlier whose rev was raised); those keep yours (recorded). The result gets rev = base.rev + 1.
    - no base: a record new on both sides keeps yours (recorded). Without any bases (a copy stored while browser storage
      was full, or by a version before revisions), yours stays only when its rev is higher; otherwise the file's is
      taken (this browser's copy is recorded).
@@ -180,8 +183,44 @@ function mergeFile(k, L, F, B, rec) {
     if (clash) rec.kept.add(k);
     return out;
   }
-  if (!sameContent(F, B)) rec.kept.add(k);
-  return L;
+  if (sameContent(F, B)) return L;
+  /* an older copy: its rev is below the base's (the page raises rev on every change it writes) */
+  if (revOf(F) < revOf(B)) {
+    rec.kept.add(k);
+    return L;
+  }
+  /* the same rev with other fields: an edit made on the current version without a new rev. Its fields are taken,
+     except a field you changed since the base, or one set to the value it had before the base's last change (an older
+     copy whose rev was raised from an earlier read); those keep yours (recorded). */
+  const P = prevBases[k];
+  const out = { ...L };
+  let took = false,
+    clash = false;
+  for (const u of unitsOf(L, F, B)) {
+    if (sameUnit(F, B, u)) continue;
+    if (P && Object.hasOwn(P, u) && eqv(unitVal(F, u), P[u])) clash = true;
+    else if (sameUnit(L, B, u)) {
+      setUnit(out, F, u);
+      took = true;
+    } else if (!sameUnit(L, F, u)) clash = true;
+  }
+  if (clash) rec.kept.add(k);
+  if (!took) return L;
+  for (const f of ["updatedAt", "changedBy"]) if (F[f] !== undefined) out[f] = F[f];
+  out.rev = Math.max(revOf(L), revOf(B)) + 1;
+  return clean(out);
+}
+/* "c:id" -> the units the record had before its base's last change (when that change raised rev): {unit: old value}.
+   Only the units that changed are kept. */
+let prevBases = Object.create(null);
+function setBase(k, rec) {
+  const old = bases[k];
+  if (old && revOf(rec) > revOf(old) && !sameContent(old, rec)) {
+    const d = {};
+    for (const u of unitsOf(old, rec)) if (!sameUnit(old, rec, u)) d[u] = unitVal(old, u) ?? null;
+    prevBases[k] = d;
+  }
+  bases[k] = rec;
 }
 /* The file's records `n` (normalized) merged into a copy of `st`; the bases become the file's records. */
 function mergeIn(st, n, rec) {
@@ -198,7 +237,7 @@ function mergeIn(st, n, rec) {
       const L = hasRec(next, c, id) ? next[c][id] : null;
       /* unchanged since the last read or write: nothing to merge */
       if (!(L && B && sameRec(B, F))) next[c][id] = mergeFile(k, L, F, B, rec);
-      bases[k] = F;
+      setBase(k, F);
     }
   basesKnown = true;
   return next;
@@ -218,8 +257,11 @@ function revsForWrite(snap) {
 }
 /* The data file holds `snap` now (just written). */
 function setBases(snap) {
-  bases = Object.create(null);
-  for (const c of COLLS) for (const id of Object.keys(snap[c])) bases[c + ":" + id] = snap[c][id];
+  for (const c of COLLS) for (const id of Object.keys(snap[c])) setBase(c + ":" + id, snap[c][id]);
+  for (const k of Object.keys(bases)) {
+    const [c, id] = splitKey(k);
+    if (!hasRec(snap, c, id)) delete bases[k];
+  }
   basesKnown = true;
 }
 /* Tabs share one copy in browser storage: each tab writes its copy there after every change and takes the other tabs'
@@ -320,7 +362,7 @@ function wrapperOk(t) {
 const DATA_HEADER =
   "// Job Search Organizer data. The page and any tool you trust (a script, an AI assistant) may edit this file.\n" +
   '// Rules: read this file right before you write it. Every record has a revision number "rev": when you add or change\n' +
-  '// a record, set its "rev" to the old value + 1 (a new record: 1). A change without a new rev is not taken.\n' +
+  '// a record, set its "rev" to the old value + 1 (a new record: 1). An old copy never overwrites newer changes.\n' +
   "// Never delete a record outright: set deleted:true and removedAt, with a new rev. Also set updatedAt and changedBy.\n";
 function serialize(st) {
   return (
@@ -348,6 +390,8 @@ if (saved._base && typeof saved._base === "object") {
   bases = basesIn(saved._base, store);
   basesKnown = true;
 }
+if (saved._prev && typeof saved._prev === "object" && !Array.isArray(saved._prev))
+  for (const [k, v] of Object.entries(saved._prev)) if (bases[k] && v && typeof v === "object") prevBases[k] = v;
 /* what that first merge recorded: written to backups/ and shown once saving to the folder is on (see recordMerge) */
 let pendingRecord = null;
 if (fileCopy) {

@@ -32,7 +32,7 @@ function setNote(msg) {
 function persistLocal(force) {
   let text;
   try {
-    text = JSON.stringify({ ...store, _base: basesOut(store) });
+    text = JSON.stringify({ ...store, _base: basesOut(store), _prev: prevBases });
   } catch (e) {
     text = JSON.stringify(store);
   }

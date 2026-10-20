@@ -292,7 +292,7 @@ data.plan.w1a.doneAt = iso(-9);
 const header =
   "// Job Search Organizer data. The page and any tool you trust (a script, an AI assistant) may edit this file.\n" +
   '// Rules: read this file right before you write it. Every record has a revision number "rev": when you add or change\n' +
-  '// a record, set its "rev" to the old value + 1 (a new record: 1). A change without a new rev is not taken.\n' +
+  '// a record, set its "rev" to the old value + 1 (a new record: 1). An old copy never overwrites newer changes.\n' +
   "// Never delete a record outright: set deleted:true and removedAt, with a new rev. Also set updatedAt and changedBy.\n";
 const write = (board, obj) => {
   mkdirSync(join(ROOT, "boards", board), { recursive: true });

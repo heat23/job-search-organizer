@@ -229,15 +229,28 @@ function renderDoc(md, prefix, opts) {
     nth = {},
     inSec = {};
   const baseOf = (t) => opts.mineKey + "::" + normK(t);
+  const secTotal = {};
   for (const s of d.secs)
-    for (const t of s.qs.length ? s.qs.map((q) => q.title) : [s.title]) total[baseOf(t)] = (total[baseOf(t)] || 0) + 1;
+    for (const t of s.qs.length ? s.qs.map((q) => q.title) : [s.title]) {
+      total[baseOf(t)] = (total[baseOf(t)] || 0) + 1;
+      const bs = baseOf(t) + "\n" + s.title;
+      secTotal[bs] = (secTotal[bs] || 0) + 1;
+    }
   const filled = (k) => !!(k && (MY[k] || "").trim());
   /* the key of a question in section `sec`, and an older key to show (and move) while the box has no answer */
   const keyOf = (t, sec) => {
     const base = baseOf(t);
     nth[base] = (nth[base] || 0) + 1;
     const m = (inSec[base + "\n" + sec] = (inSec[base + "\n" + sec] || 0) + 1);
-    const sk = base + " @" + normK(sec) + (m > 1 ? " #" + m : "");
+    let sk = base + " @" + normK(sec) + (m > 1 ? " #" + m : "");
+    /* a copy numbered higher than the copies now on the sheet has an answer: a same-titled section was removed, so the
+       numbers no longer say which round is which. Fresh keys then, and the old answers show under earlier versions
+       (a box never shows, or overwrites, another round's answer). */
+    const n = secTotal[base + "\n" + sec] || 1;
+    const sp = base + " @" + normK(sec) + " #";
+    const fresh = sk + " ~" + m + "/" + n;
+    if (filled(fresh) || Object.keys(MY).some((k) => k.startsWith(sp) && +k.slice(sp.length) > n && filled(k)))
+      sk = fresh;
     /* older keys: the plain one (first copy), or " #n" by position (a development version used those) */
     const old = nth[base] === 1 ? base : base + " #" + nth[base];
     if (opts.ask) return { k: sk, alt: null };

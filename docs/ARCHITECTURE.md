@@ -36,7 +36,8 @@ The scripts are classic scripts joined in file-name order, not ES modules, becau
 
 - **Two copies, merged by revision numbers.** Every change is stored in the browser at once and written to `board_data.js` 400 ms later. Every record has a whole number `rev` (missing = 0). Whoever changes a record, the page or another tool, sets `rev` to the old value + 1; `updatedAt` and `changedBy` are only shown, never compared, so clocks play no part. For each record the page keeps its **base**: the record exactly as the file held it at the last successful read or write, stored with the browser's copy (in memory only while storage is full, with a one-time note). When the file's record F differs from the browser's record L:
   - **F.rev > base.rev:** a real new edit. Per field (`deleted` and `removedAt` count as one), the side that changed it since the base wins. A field both changed to different values keeps L's value: a conflict, recorded. The result's rev is max(F.rev, L.rev), + 1 while L's changes are unwritten.
-  - **F.rev ≤ base.rev but F ≠ base:** an older copy written back, or an edit made without a new rev. L is kept for every field and written back, recorded.
+  - **F.rev < base.rev:** an older copy written back. The page raises `rev` on every change it writes (edits, filing, tab merges, Restore and Undo; a test checks every write), so a copy read before a change always has a lower rev. L is kept for every field and written back, recorded.
+  - **F.rev = base.rev but F ≠ base:** an edit made on the current file without a new rev. Its fields are taken, except a field L changed since the base, or one set back to the value it had before the base's last change (an older copy whose rev was raised from an earlier read; the page keeps those previous values per record). Those keep L's value, recorded. The result is written with rev = base.rev + 1.
   - **No base:** a record new on both sides keeps L, recorded. A copy stored without bases (storage full, or a version before revisions) keeps L only if L.rev > F.rev; otherwise it takes F and records L.
   - **Missing from the file but with a base:** kept and written back (deleting is `deleted: true`), recorded.
 
@@ -52,7 +53,7 @@ The scripts are classic scripts joined in file-name order, not ES modules, becau
 
 ## Tests
 
-`npm test` runs 552 checks (12 suites) in headless Chromium against a copy of `boards/sample`. An in-memory folder (`src/demo/memfs.js`, with test hooks in `tests/ffs.js`) stands in for the folder picker, so the tests cover saving, conflicts, permission loss and write failures without touching the disk.
+`npm test` runs 557 checks (12 suites) in headless Chromium against a copy of `boards/sample`. An in-memory folder (`src/demo/memfs.js`, with test hooks in `tests/ffs.js`) stands in for the folder picker, so the tests cover saving, conflicts, permission loss and write failures without touching the disk.
 
 ## The live demo
 
