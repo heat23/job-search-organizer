@@ -16,9 +16,20 @@ let dirHandle = null,
   dirty = false,
   writing = false;
 let localOk = true;
+/* This browser's copy is kept together with the base of every record (what the data file held at the last read or
+   write), in one entry so another tab always gets a matching pair. When browser storage is full the copy is kept
+   without its bases (after a reload such records then merge by the newer updatedAt, as before). */
+let lastLocal = "";
 function persistLocal() {
-  localOk = lsSet("board", JSON.stringify(store));
-  lsSet("bases", JSON.stringify(unsyncedBases()));
+  let text;
+  try {
+    text = JSON.stringify({ ...store, _bases: basesOf(store) });
+  } catch (e) {
+    text = JSON.stringify(store);
+  }
+  if (text === lastLocal) return localOk;
+  localOk = lsSet("board", text) || lsSet("board", JSON.stringify(store));
+  if (localOk) lastLocal = text;
   return localOk;
 }
 let gen = 0;
@@ -58,6 +69,7 @@ async function readFileInto() {
         fileRecs[k] = n[c][id];
       }
     store = next;
+    persistLocal();
     checkWrapper(t);
     return "ok";
   } catch (e) {
@@ -92,16 +104,26 @@ async function writeFile() {
       saveErr = "bad";
     } else {
       await dailyBackup(lastRaw);
+      /* What is written is a copy taken now: an edit made while the file is being written is not in the file, so it
+         must not become the file's base (it would then look like a change the file undid). */
+      const snap = merge(store, emptyStore());
+      const text = serialize(snap);
       const fh = await dirHandle.getFileHandle(DATA_FILE, { create: true });
       const w = await fh.createWritable();
-      await w.write(serialize(store));
+      await w.write(text);
       await w.close();
-      setFileBase(store);
-      setFileRecs(store);
+      setFileBase(snap);
+      setFileRecs(snap);
       persistLocal();
       lastSaved = new Date();
       saveErr = "";
-      if (gen === g) dirty = false;
+      if (gen === g && collectionsOnly(store) === collectionsOnly(snap)) dirty = false;
+      else {
+        /* changed while writing (an edit, another tab's copy): write again */
+        dirty = true;
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(writeFile, 400);
+      }
       setTimeout(fileJobs, 50);
       myResume();
     }
@@ -176,24 +198,29 @@ const REMOVED_DIR = CONFIG.stageFolders.removed,
   PURGE_DAYS = CONFIG.removedPurgeDays;
 const STAGE_DIRS = [...new Set(Object.values(STAGE_DIR))];
 function splitFolder(f) {
-  const p = String(f || "").split("/");
+  const c = canonFolder(String(f || ""));
+  const p = c.split("/");
   return p.length > 1 && STAGE_DIRS.includes(p[0])
     ? { stage: p[0], name: p.slice(1).join("/") }
-    : { stage: "", name: String(f || "") };
+    : { stage: "", name: c };
 }
 /* Folders at the top of the board that are never a job's folder (a job's "folder" naming one of them would move it). */
 const RESERVED_DIRS = ["Library", "Job notes", "backups"];
 const sameName = (a, b) => String(a).normalize("NFC").toLowerCase() === String(b).normalize("NFC").toLowerCase();
 /* Why a job's "folder" value can't be a job folder, or "" when it can. Checked before anything is moved or linked:
    it must be a relative path inside the board, not a stage folder, Library, Job notes or backups, nor the board itself. */
+/* The board's own files: a "folder" naming one of them would move it. Other names with a dot ("Acme - Node.js") are
+   folders like any other. */
+const BOARD_FILES = [DATA_FILE, "organizer.config.js", "organizer.html", "index.html", "AGENTS.md", "CLAUDE.md"];
 function badFolder(f) {
   if (typeof f !== "string" || !f.trim()) return "it's empty";
   if (/^[\\/]|^[A-Za-z]:|^~/.test(f)) return "it's an absolute path";
+  f = canonFolder(f);
   if (f.includes("\\")) return "it has a backslash (use / between folders)";
   const segs = f.split("/");
   if (segs.some((x) => !x.trim() || x === "." || x === "..")) return "it has an empty, . or .. part";
   if (RESERVED_DIRS.some((r) => sameName(r, segs[0]))) return `it points into ${segs[0]}/`;
-  if (segs.length === 1 && /\.(js|html|md)$/i.test(segs[0])) return "it names a file";
+  if (segs.length === 1 && BOARD_FILES.some((n) => sameName(n, segs[0]))) return "it names one of the board's files";
   const { name } = splitFolder(f);
   const first = name.split("/")[0];
   if (STAGE_DIRS.some((d) => sameName(d, f) || sameName(d, first))) return "it names a stage folder, not a job folder";
@@ -264,6 +291,8 @@ const fileSig = (x) => [x.deleted ? 1 : 0, laneKey("jobs", x), x.folder || ""].j
 let purgedDay = "",
   fileFull = false;
 const badWarned = new Set();
+/* A move that failed is tried again on the next filing pass (after the next save); its message shows once. */
+const failWarned = new Map();
 async function fileJobs(full) {
   if (!dirHandle || !canWrite || VIEW_ONLY) return;
   if (full === true) fileFull = true;
@@ -279,6 +308,13 @@ async function fileJobs(full) {
     failed = [],
     bad = [],
     rescan = [];
+  const fail = (id, x, nm) => {
+    filedSig.delete(id);
+    const sig = fileSig(x);
+    if (failWarned.get(id) === sig) return;
+    failWarned.set(id, sig);
+    failed.push(x.company || nm);
+  };
   try {
     for (const [id, x] of Object.entries(store.jobs)) {
       if (!x || !x.folder) {
@@ -310,7 +346,7 @@ async function fileJobs(full) {
             await (await dirAt(REMOVED_DIR)).removeEntry(name, { recursive: true });
           } catch (e) {
             if (!e || e.name !== "NotFoundError") {
-              failed.push(x.company || name);
+              fail(id, x, name);
               continue;
             }
           }
@@ -321,7 +357,10 @@ async function fileJobs(full) {
         }
         continue;
       }
-      if (stage === want) continue;
+      if (stage === want) {
+        failWarned.delete(id);
+        continue;
+      }
       const target = want + "/" + name;
       try {
         let from = null;
@@ -332,23 +371,24 @@ async function fileJobs(full) {
           }
         const there = await hasDir(target);
         if (from && there) {
-          failed.push(x.company || name);
+          fail(id, x, name);
           continue;
         }
         if (from) {
           await moveDir(from, target);
           moved.push(x.company || name);
         } else if (!there) {
-          failed.push(x.company || name);
+          fail(id, x, name);
           continue;
         }
         const r = store.jobs[id];
         store.jobs[id] = { ...r, folder: target, updatedAt: stamp(r), changedBy: "you" };
         filedSig.set(id, fileSig(store.jobs[id]));
+        failWarned.delete(id);
         rescan.push(target);
         persist();
       } catch (e) {
-        failed.push(x.company || name);
+        fail(id, x, name);
       }
     }
     if (purge) purgedDay = TODAY();

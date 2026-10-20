@@ -140,7 +140,7 @@ Job Search/
 - Chrome and Edge can write to a folder you pick (the [File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_API)). Other browsers open the page as view-only.
 - Every change is also kept in the browser, so nothing is lost if saving pauses. If a notes file changes on disk while you type, both versions are kept.
 - Everything is plain text, so you can read it, search it or back it up with any tool, and it still works if this project goes away.
-- **`board_data.js` and `organizer.config.js` are loaded by the page as scripts**, so whatever is in them runs in the page, which can read and write your board folder. Only let tools you trust write them. An AI assistant should change only the JSON object in `board_data.js` and never add code (`AGENTS.md` tells it so). The page reads the file from your folder with a JSON parser, never runs it again, and warns you if it holds anything besides the comment lines and `window.BOARD_DATA = {…};`.
+- **`board_data.js` and `organizer.config.js` are loaded by the page as scripts**, so whatever is in them runs in the page, which can read and write your board folder. Only let tools you trust write them. An AI assistant should change only the JSON object in `board_data.js` and never add code (`AGENTS.md` tells it so). The page reads the file from your folder with a JSON parser, never runs it again, and warns you if it holds anything besides the comment lines and `window.BOARD_DATA = {…};`. That warning comes after the page has loaded the file, so treat it as a check, not a protection.
 
 ## Guides and prep sheets
 
@@ -161,8 +161,8 @@ A job gets a prep sheet as soon as `Job notes/<job id>/prep.md` exists. It opens
 ## How it's built
 
 - **No framework, no runtime dependencies.** 18 small plain-JavaScript files under `src/`, joined by an 80-line build script into one HTML file that runs from `file://`.
-- **Safe with other writers.** When the page and another tool both change a record, they merge field by field (each side keeps the fields it changed, and the newer `updatedAt` wins a field both changed). Nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
-- **Tested in a real browser.** 390 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
+- **Safe with other writers.** When the page and another tool both change a record, they merge field by field (each side keeps the fields it changed, and the newer `updatedAt` wins a field both changed), also after a reload. A tool that writes back an older copy of the file never undoes what you saved: records older than your saved version are ignored and written back. Nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
+- **Tested in a real browser.** 441 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
 - **Private.** Guides are escaped before rendering, and a test fails if the page makes any network request.
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -173,7 +173,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 npm install
 npx playwright install chromium   # once, for the tests
 npm run build                     # src/ -> boards/*/organizer.html
-npm test                          # 390 browser checks
+npm test                          # 441 browser checks
 npm run demo                      # the live demo page -> _site/index.html
 ```
 

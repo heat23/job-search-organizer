@@ -1,20 +1,28 @@
 /* ================= "My version" answers (Library/My_answers.md, written only by this page) =================
    Every ✎ question in a guide or prep sheet gets a box for your own wording, and every {.ask} question on a prep
-   sheet a "Their answer" box. Prep sheet answers are keyed "prep:<job id>::<question>". Answers are kept in this
-   browser at once and written to the file about a second after you stop typing.
+   sheet a "Their answer" box. Prep sheet answers are keyed "prep:<job id>::<question>" (see renderDoc for a question
+   that is on a sheet more than once). Answers are kept in this browser at once and written to the file about a second
+   after you stop typing.
    The file is never written without reading it first: every write reads the file, merges it with this browser's
-   answers and only then writes. Merge rule: every key from both sides is kept; a box you changed since the last read
-   wins; any other key takes the file's value. If the file can't be read (no permission yet, a sync client holding it),
-   nothing is written: the answers wait in this browser and are written once the file can be read. */
+   answers and only then writes. Merge rule, per key:
+   - a box you changed since the last write wins (emptying it, or Remove, deletes the answer from the file);
+   - an answer the file lost since this browser last read it (deleted by hand, by your assistant or from another tab)
+     stays deleted: it is remembered as removed, so no other tab and no later save brings it back (a file that is
+     missing altogether deletes nothing);
+   - an answer only in this browser that the file never had is kept and written;
+   - any other key takes the file's value.
+   If the file can't be read (no permission yet, a sync client holding it), nothing is written: the answers wait in
+   this browser and are written once the file can be read. Open tabs share their waiting answers and removals key by
+   key (through browser storage), so one tab never drops what another typed. */
 const MYLK = "myAnswers",
-  MYDIRTY = "myAnswersDirty";
+  MYDIRTY = "myAnswersDirty",
+  MYGONE = "myAnswersGone",
+  MYSEEN = "myAnswersSeen";
 let MY = {},
   myLoaded = false,
   myTimer = null,
   myBusy = false,
   myAgain = false;
-/* keys changed in this browser since the file was last read and written (kept across reloads until written) */
-let myDirty = new Set();
 const normK = (k) =>
   String(k)
     .replace(/\s*[✎☐]\s*/g, " ")
@@ -28,11 +36,69 @@ const myJson = (name, fallback) => {
     return fallback;
   }
 };
+/* keys changed in this browser and not written yet -> the time of the change (kept across reloads until written).
+   An older copy stored a plain list of keys. */
+const dirtyFrom = (v) =>
+  new Map(
+    Array.isArray(v)
+      ? v.filter((k) => typeof k === "string").map((k) => [k, 0])
+      : Object.entries(v || {}).filter(([, t]) => typeof t === "number"),
+  );
+const timesFrom = (v) => Object.fromEntries(Object.entries(v || {}).filter(([, t]) => typeof t === "number"));
+const GONE_DAYS = 180;
 MY = myJson(MYLK, {});
-myDirty = new Set(Array.isArray(myJson(MYDIRTY, null)) ? myJson(MYDIRTY, []) : []);
+let myDirty = dirtyFrom(myJson(MYDIRTY, null));
+/* When an answer was last removed (in a box, by Remove, or from the file): key -> time. A negative time is when it
+   was given an answer again (typed, or put back in the file), so another tab's older removal doesn't undo that.
+   Forgotten after GONE_DAYS. */
+let myGone = timesFrom(myJson(MYGONE, {}));
+for (const [k, t] of Object.entries(myGone)) if (Date.now() - Math.abs(t) > GONE_DAYS * 864e5) delete myGone[k];
+const isGone = (k) => myGone[k] > 0;
+/* the keys the file held at the last read or write (null: not read yet by this version of the page) */
+let mySeen = Array.isArray(myJson(MYSEEN, null)) ? new Set(myJson(MYSEEN, [])) : null;
+/* waiting answers this tab took from another tab (key -> time), and answers this tab wrote (key -> edit time) */
+const myFromTab = new Map(),
+  mySent = new Map();
+/* Take another tab's waiting answers and removals, key by key: the later change wins. A waiting answer taken from a
+   tab that no longer lists it was written (or replaced) by that tab, so it stops waiting here too. */
+function myAbsorb() {
+  const theirs = myJson(MYLK, {}),
+    td = dirtyFrom(myJson(MYDIRTY, null)),
+    tg = timesFrom(myJson(MYGONE, {}));
+  let changed = false;
+  for (const [k, t] of Object.entries(tg)) {
+    if (Math.abs(t) <= Math.abs(myGone[k] || 0)) continue;
+    myGone[k] = t;
+    if (t > 0 && (myDirty.has(k) ? myDirty.get(k) < t : k in MY)) {
+      delete MY[k];
+      myDirty.delete(k);
+      myFromTab.delete(k);
+      changed = true;
+    }
+  }
+  for (const [k, t] of td) {
+    const mine = myDirty.get(k);
+    if ((mine !== undefined ? t > mine : t > (mySent.get(k) ?? -1)) && !(myGone[k] >= t)) {
+      if (MY[k] !== (theirs[k] ?? "")) changed = true;
+      MY[k] = typeof theirs[k] === "string" ? theirs[k] : "";
+      myDirty.set(k, t);
+      myFromTab.set(k, t);
+    }
+  }
+  for (const [k, t] of [...myFromTab])
+    if (!td.has(k) && myDirty.get(k) === t) {
+      myDirty.delete(k);
+      myFromTab.delete(k);
+    }
+  return changed;
+}
 const myKeep = () => {
+  const changed = myAbsorb();
   lsSet(MYLK, JSON.stringify(MY));
-  lsSet(MYDIRTY, JSON.stringify([...myDirty]));
+  lsSet(MYDIRTY, JSON.stringify(Object.fromEntries(myDirty)));
+  lsSet(MYGONE, JSON.stringify(myGone));
+  if (mySeen) lsSet(MYSEEN, JSON.stringify([...mySeen]));
+  return changed;
 };
 /* A line in an answer that starts with "## " is written as "\## " so it is not read back as a new question
    (a line that already starts with backslashes and "## " gets one more); reading removes one backslash. */
@@ -59,14 +125,25 @@ function myFromMd(t) {
   if (k) o[k] = buf.join("\n").trim();
   return o;
 }
-/* Merge what the file holds into MY (see the rule at the top). Returns true when MY changed. */
-function myMerge(disk) {
+/* Merge what the file holds into MY (see the rule at the top). Returns true when MY changed. When there is no file
+   at all (removed, or another folder was picked), nothing counts as deleted from it: every answer is written again. */
+function myMerge(disk, exists) {
+  myAbsorb();
   const out = {};
-  for (const [k, v] of Object.entries(disk)) if (v) out[k] = v;
+  for (const [k, v] of Object.entries(disk))
+    if (v) {
+      out[k] = v;
+      /* back in the file after it was removed: put back on purpose (by hand or by your assistant) */
+      if (isGone(k) && !myDirty.has(k)) myGone[k] = -Date.now();
+    }
   for (const [k, v] of Object.entries(MY)) {
     if (myDirty.has(k)) out[k] = v;
-    else if (!(k in out) && v && v.trim()) out[k] = v; // only in this browser: kept
+    else if (k in out || !v || !v.trim() || isGone(k)) continue;
+    else if (exists && mySeen && mySeen.has(k))
+      myGone[k] = Date.now(); // the file lost it since the last read
+    else out[k] = v; // never in the file: only in this browser, kept
   }
+  mySeen = new Set(Object.keys(disk).filter((k) => disk[k]));
   const changed = JSON.stringify(out) !== JSON.stringify(MY);
   MY = out;
   return changed;
@@ -97,7 +174,7 @@ async function myLoad() {
       myRetry();
       return false;
     }
-    const changed = myMerge(r ? myFromMd(r.text) : {});
+    const changed = myMerge(r ? myFromMd(r.text) : {}, !!r);
     myLoaded = true;
     myKeep();
     if (changed) myFill();
@@ -126,16 +203,24 @@ async function myWrite() {
       return false;
     }
     const onDisk = r ? myFromMd(r.text) : {};
-    const changed = myMerge(onDisk);
+    const changed = myMerge(onDisk, !!r);
     myLoaded = true;
-    const sent = new Set(myDirty);
+    const sent = new Map(myDirty),
+      vals = { ...MY };
     const text = myToMd();
     /* write only when this browser has something the file lacks: an edit, or an answer only kept here */
     const needed = sent.size > 0 || Object.entries(MY).some(([k, v]) => v && v.trim() && onDisk[k] !== v);
     if (needed && (!r || r.text !== text)) await FS.write(MYPATH, text);
-    for (const k of sent) if (myDirty.has(k)) myDirty.delete(k);
+    mySeen = new Set(Object.keys(vals).filter((k) => vals[k] && vals[k].trim()));
     /* edits typed while the write ran stay marked and are written next time */
-    for (const [k, v] of Object.entries(MY)) if (!v || !v.trim()) delete MY[k];
+    for (const [k, t] of sent)
+      if (myDirty.get(k) === t && MY[k] === vals[k]) {
+        myDirty.delete(k);
+        myFromTab.delete(k);
+        mySent.set(k, t);
+        if (!vals[k] || !vals[k].trim()) myGone[k] = Date.now();
+      }
+    for (const [k, v] of Object.entries(MY)) if ((!v || !v.trim()) && !myDirty.has(k)) delete MY[k];
     myKeep();
     if (changed) myFill();
     ok = true;
@@ -180,6 +265,15 @@ window.addEventListener("pagehide", myFlush);
 const mineLabel = (det, filled) => (det.dataset.label || "My version") + (filled ? " ✓" : "");
 function fillMine(det) {
   const k = det.dataset.k;
+  /* an answer saved under the question's older key (before the question was repeated) moves to this box's key */
+  const alt = det.dataset.alt;
+  if (alt) {
+    if (!(MY[k] || "").trim() && (MY[alt] || "").trim()) {
+      mySet(k, MY[alt]);
+      mySet(alt, "");
+    }
+    delete det.dataset.alt;
+  }
   const ta = det.querySelector("textarea");
   if (ta && document.activeElement !== ta) ta.value = MY[k] || "";
   const filled = !!(MY[k] && MY[k].trim());
@@ -191,9 +285,16 @@ function fillMine(det) {
 /* Change one answer (an empty value removes it from the file on the next write). */
 function mySet(k, v) {
   MY[k] = v;
-  myDirty.add(k);
+  myDirty.set(k, Math.max(Date.now(), (myDirty.get(k) || 0) + 1));
+  myFromTab.delete(k);
+  if (v && v.trim() && myGone[k]) myGone[k] = -Date.now();
   mySave();
 }
+/* another tab typed, removed or wrote an answer: show it here too */
+window.addEventListener("storage", (e) => {
+  if (![MYLK, MYDIRTY, MYGONE].some((n) => e.key === lsKey(n))) return;
+  if (myAbsorb()) myFill();
+});
 function wireMine(root) {
   $qa("details.mine", root).forEach((det) => {
     fillMine(det);

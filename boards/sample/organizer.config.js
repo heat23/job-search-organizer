@@ -21,7 +21,7 @@ window.ORGANIZER_CONFIG = {
   //     { doc: "call-scripts", label: "Scripts", key: "s" },
   //     { doc: "cheat-sheet", label: "Cheat sheet", key: "c" },
   //     { doc: "company-research", label: "Research", key: "r" },// Library/<Group>/04_Company_research.md
-  //   ],                                                  // (keys S, C, N, G, H, 1-9 and / are taken)
+  //   ],                                                  // (S, C, N, G, ?, 1-9 and / are taken; H too with blurPay)
   // },
   // sections: {                                           // rename the Headhunters and People tabs
   //   hunters: { label: "Recruiters", short: "Recruiters", noun: "recruiter" },

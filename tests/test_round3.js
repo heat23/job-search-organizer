@@ -193,9 +193,11 @@ const REPORT = 'details.mine.ask[data-k^="prep:lumenfield::Who would I report to
       const ks = await p.$$eval("#drawerRoot .pleft details.mine", (d) => d.map((x) => x.dataset.k));
       const Q = "prep:tidewater::What does success look like in 90 days?";
       const W = "prep:tidewater::Why this role?";
+      const R1 = " @Round 1: recruiter",
+        R2 = " @Round 2: hiring manager";
       ok(
-        "M2 a repeated question gets its own key: the first keeps the old one, the next gets #2",
-        JSON.stringify(ks) === JSON.stringify([Q, W, Q + " #2", W + " #2"]),
+        "M2 a repeated question gets its own key per copy, named by its section",
+        JSON.stringify(ks) === JSON.stringify([Q + R1, W + R1, Q + R2, W + R2]),
         JSON.stringify(ks),
       );
       const boxes = p.locator("#drawerRoot details.mine.ask textarea");
@@ -205,8 +207,8 @@ const REPORT = 'details.mine.ask[data-k^="prep:lumenfield::Who would I report to
       const md = await answers(p);
       ok(
         "M2 both answers are saved, under different keys",
-        md.includes(`## ${Q}\nRecruiter: ship the migration.`) &&
-          md.includes(`## ${Q} #2\nManager: own the on-call rotation.`),
+        md.includes(`## ${Q}${R1}\nRecruiter: ship the migration.`) &&
+          md.includes(`## ${Q}${R2}\nManager: own the on-call rotation.`),
         md.replace(/\n/g, "\\n").slice(0, 400),
       );
       ok(

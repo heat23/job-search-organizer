@@ -166,13 +166,29 @@ async function onFocus() {
 window.addEventListener("focus", () => {
   focusRun = onFocus();
 });
-/* Keep two open copies of the page in step. An open panel shows the other tab's change like a change from the folder. */
+/* Keep two open copies of the page in step. An open panel shows the other tab's change like a change from the folder.
+   The other tab's records merge field by field, like the file's: against the older of the two tabs' bases (the version
+   both copies came from), so a tab that loaded an older file doesn't undo what this tab took from a newer one. */
+function mergeOtherTab(raw) {
+  const theirs = normalize(raw);
+  const ob = raw && raw._bases && typeof raw._bases === "object" ? raw._bases : {};
+  const next = merge(store, emptyStore());
+  for (const c of COLLS)
+    for (const id of Object.keys(theirs[c])) {
+      const k = c + ":" + id;
+      let base = baseFrom(ob[k], c, id, theirs[c][id]);
+      const mine = fileRecs[k];
+      if (mine && (!base || ts(mine) < ts(base))) base = mine;
+      next[c][id] = merge3(next[c][id], theirs[c][id], base);
+    }
+  store = next;
+}
 window.addEventListener("storage", (e) => {
   if (e.key !== lsKey("board") || !e.newValue) return;
   try {
     const before = collectionsOnly(store);
     const recBefore = openRef ? JSON.stringify(get(openRef.sec, openRef.id) || null) : "";
-    store = merge(store, normalize(JSON.parse(e.newValue)));
+    mergeOtherTab(JSON.parse(e.newValue));
     if (collectionsOnly(store) !== before) {
       if (canWrite) {
         gen++;

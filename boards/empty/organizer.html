@@ -2311,7 +2311,9 @@ function checkConfig(cfg) {
      where a number belongs) falls back to the default with a warning, rather than leaving a blank page. */
   const kind = (v) => (v === null ? "null" : Array.isArray(v) ? "list" : typeof v);
   const clone = (v) => (v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v);
-  const NULLABLE = ["demo", "library.hunterScript", "library.hunterPlaybook"];
+  /* null where it can mean "none": no owner name, no outreach guide, and the default number of days to keep removed folders */
+  const NULLABLE = ["demo", "library.hunterScript", "library.hunterPlaybook", "library.outreachDoc", "ownerName"];
+  if (cfg.removedPurgeDays === null) cfg.removedPurgeDays = DEFAULT_CONFIG.removedPurgeDays;
   const OWN_CHECK = ["lanes", "callTypes", "stale", "plan.weekNames"];
   const fix = (obj, dflt, path) => {
     for (const k of Object.keys(dflt)) {
@@ -2351,6 +2353,10 @@ function checkConfig(cfg) {
       return false;
     }
   };
+  /* a RegExp literal works too (its pattern is used) */
+  cfg.library.pillLabels = cfg.library.pillLabels.map((pl) =>
+    Array.isArray(pl) && pl[0] instanceof RegExp ? [pl[0].source, ...pl.slice(1)] : pl,
+  );
   cfg.library.pillLabels = cfg.library.pillLabels.filter((pl) => {
     const good = Array.isArray(pl) && reOk(pl[0]) && typeof pl[1] === "string";
     if (!good) warn(`library.pillLabels has an entry that isn't ["pattern", "label"]; it was skipped.`);
@@ -2364,7 +2370,7 @@ function checkConfig(cfg) {
     }
   }
   /* sheet buttons: a doc id and a label; a key is one character that no built-in shortcut uses */
-  const TAKEN = ["n", "g", "h", "/", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+  const TAKEN = ["n", "g", "/", "?", "1", "2", "3", "4", "5", "6", "7", "8", "9"].concat(cfg.blurPay ? ["h"] : []);
   const usedKeys = new Set();
   cfg.library.sheetButtons = cfg.library.sheetButtons
     .map((b, i) => {
@@ -2670,7 +2676,7 @@ const ACTIVE_LANES = ["applied", "screen", "interview", "offer"];
 /* ---- 30-store.js ---- */
 /* ================= the data store =================
    board_data.js holds five collections of records keyed by id. Two copies can exist (the file and this browser);
-   records merge by updatedAt (compared as real times), so the newer edit wins. Removed records keep deleted:true. */
+   they merge record by record (see merge3 below; updatedAt is compared as a real time). Removed records keep deleted:true. */
 const emptyStore = () => Object.fromEntries(COLLS.map((c) => [c, Object.create(null)]));
 const ts = (r) => (r && Date.parse(r.updatedAt)) || 0;
 const STR = [
@@ -2706,10 +2712,22 @@ function clean(r) {
   const o = { ...r };
   for (const k of STR)
     if (o[k] != null && typeof o[k] !== "string") o[k] = typeof o[k] === "object" ? "" : String(o[k]);
+  if (o.folder) o.folder = canonFolder(o.folder);
   if (o.followUp && !/^\d{4}-\d{2}-\d{2}$/.test(o.followUp)) o.followUp = isoToLocalDate(o.followUp) || null;
   if (o.keepUntil && !/^\d{4}-\d{2}-\d{2}$/.test(o.keepUntil)) o.keepUntil = null;
   if ((!o.lane || o.lane === "todo") && o.followUp) o.followUp = null;
   return o;
+}
+/* A job's "folder" as the page keeps it: without a trailing "/", and with the stage folder spelled as in the settings
+   ("1 - to apply/Acme" is the same folder as "1 - To apply/Acme" on macOS and Windows). */
+function canonFolder(f) {
+  const x = String(f).replace(/\/+$/, "");
+  if (!x) return f;
+  const segs = x.split("/");
+  const low = (v) => v.normalize("NFC").toLowerCase();
+  const st = segs.length > 1 && Object.values(CONFIG.stageFolders).find((d) => low(d) === low(segs[0]));
+  if (st) segs[0] = st;
+  return segs.join("/");
 }
 /* Top-level keys other tools add beyond the five collections are kept and written back untouched. */
 let extras = Object.create(null);
@@ -2733,11 +2751,18 @@ function normalize(src) {
   return out;
 }
 /* ---- field-level three-way merge ----
-   For each record the page remembers the version the data file held when it was last read or written (its base).
-   When the file and this browser both changed a record since then, the two are merged field by field: a field only the
-   file changed takes the file's value, a field only this browser changed keeps yours, and a field both changed takes
-   the value from the record with the newer updatedAt. Without a base (a record never read from this file), the newer
-   record wins as a whole. A removal (deleted: true) is a field like any other, so it is never undone by a merge. */
+   For each record the page remembers the version the data file held when it was last read or written (its base),
+   also across reloads (kept with this browser's copy). Comparing the file's record with that base:
+   - the file didn't change it: this browser's copy stays (and is written back if it is newer);
+   - the file's record has an updatedAt OLDER than the base: it is a stale copy (a tool wrote back what it read before
+     your last save), so it is ignored and the next save writes your version back. Your saved edits, Removes and
+     Restores are never undone by an older copy;
+   - the file changed it with the same updatedAt as the base (a tool edited a field but didn't stamp it): the fields
+     it changed are taken, except a field this browser changed too (yours wins, since the file isn't newer);
+   - the file changed it with a newer updatedAt: field by field, a field only the file changed takes the file's value,
+     a field only this browser changed keeps yours, and a field both changed takes the value of the newer record.
+   Without a base (a record never read from this file), the record with the newer updatedAt wins as a whole.
+   A removal (deleted: true) is a field like any other. */
 const canon = (v) =>
   JSON.stringify(v === undefined ? null : v, (k, x) =>
     x && typeof x === "object" && !Array.isArray(x)
@@ -2754,14 +2779,23 @@ function sameRec(a, b) {
   for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (!eqv(a[k], b[k])) return false;
   return true;
 }
+/* the same fields, whatever the stamp (updatedAt, changedBy) */
+function sameContent(a, b) {
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)]))
+    if (k !== "updatedAt" && k !== "changedBy" && !eqv(a[k], b[k])) return false;
+  return true;
+}
+const isoAt = (ms) => new Date(ms).toISOString();
 function merge3(cur, disk, base) {
   if (!cur) return disk;
   if (!disk || sameRec(cur, disk)) return cur;
   if (!base) return ts(disk) > ts(cur) ? disk : cur;
-  const diskChanged = !sameRec(disk, base),
-    localChanged = !sameRec(cur, base);
-  if (!diskChanged) return cur;
-  if (!localChanged) return disk;
+  if (sameRec(disk, base)) return cur;
+  if (ts(disk) < ts(base)) return cur;
+  if (sameContent(cur, disk)) return ts(disk) > ts(cur) ? disk : cur;
+  const stamped = ts(disk) > ts(base);
+  /* only the file changed it; an unstamped edit gets a new time so other tabs and the file take it too */
+  if (sameRec(cur, base)) return stamped ? disk : { ...disk, updatedAt: isoAt(ts(disk) + 1) };
   const diskNewer = ts(disk) > ts(cur);
   const out = {};
   for (const k of new Set([...Object.keys(base), ...Object.keys(cur), ...Object.keys(disk)])) {
@@ -2774,8 +2808,11 @@ function merge3(cur, disk, base) {
     const v = dc && lc ? (diskNewer ? d : l) : dc ? d : l;
     if (v !== undefined) out[k] = v;
   }
+  /* one side's values only: keep that record as it is (two tabs merging each other's copies settle at once) */
+  if (sameContent(out, cur)) return cur;
+  if (sameContent(out, disk) && diskNewer) return disk;
   /* later than both, so the merged record wins everywhere (other tabs, the file) */
-  out.updatedAt = new Date(Math.max(ts(cur), ts(disk)) + 1).toISOString();
+  out.updatedAt = isoAt(Math.max(ts(cur), ts(disk)) + 1);
   const by = diskNewer ? disk.changedBy : cur.changedBy;
   if (by !== undefined) out.changedBy = by;
   return clean(out);
@@ -2786,16 +2823,22 @@ function setFileRecs(st) {
   fileRecs = Object.create(null);
   for (const c of COLLS) for (const id of Object.keys((st && st[c]) || {})) fileRecs[c + ":" + id] = st[c][id];
 }
-/* The bases of records this browser changed and hasn't written yet, kept with the browser copy, so edits made while
-   saving was paused still merge field by field with another tool's edits after a reload. */
-function unsyncedBases() {
+/* The bases kept with this browser's copy (see persistLocal): "c:id" -> 1 when the base is the record itself (most
+   records, so this stays small), or the base record when this browser's copy differs from the file. */
+function basesOf(st) {
   const out = {};
   for (const c of COLLS)
-    for (const id of Object.keys(store[c])) {
+    for (const id of Object.keys(st[c])) {
       const b = fileRecs[c + ":" + id];
-      if (b && !sameRec(b, store[c][id])) out[c + ":" + id] = b;
+      if (b) out[c + ":" + id] = sameRec(b, st[c][id]) ? 1 : b;
     }
   return out;
+}
+/* A kept base back as a record (1 = the record it was kept with), or null. */
+function baseFrom(v, c, id, rec) {
+  if (v === 1) return rec || null;
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  return normalize({ [c]: { [id]: v } })[c][id] || null;
 }
 function merge(a, b) {
   const out = emptyStore();
@@ -2832,13 +2875,15 @@ function wrapperOk(t) {
   const i = t.indexOf("{", k),
     j = t.lastIndexOf("}");
   if (k < 0 || i < 0 || j < i) return false;
-  const bare = (x) => x.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  /* comments are removed in one left-to-right pass, as JavaScript reads them: a "/*" inside a line comment starts
+     nothing, and a line comment ends at any line break JavaScript knows (\r, U+2028 and U+2029 too) */
+  const bare = (x) => x.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n\r\u2028\u2029]*/g, "");
   return /^\s*window\.BOARD_DATA\s*=\s*$/.test(bare(t.slice(0, i))) && /^\s*;?\s*$/.test(bare(t.slice(j + 1)));
 }
 function serialize(st) {
   return (
     "// Job Search Organizer data. The page and any tool you trust (a script, an AI assistant) may edit this file.\n" +
-    "// Rules: every record has updatedAt (ISO time, UTC with Z); when two copies differ, the newer one wins.\n" +
+    "// Rules: stamp every record you add or change with updatedAt = now (ISO time, UTC with Z); an older copy never wins.\n" +
     "// Never delete a record outright: set deleted:true and a new updatedAt. Other tools also set changedBy to their name.\n" +
     "window.BOARD_DATA = " +
     JSON.stringify({ version: 1, savedAt: new Date().toISOString(), ...extras, ...st }, null, 1) +
@@ -2847,28 +2892,22 @@ function serialize(st) {
 }
 keepExtras(window.BOARD_DATA);
 const fileCopy = window.BOARD_DATA && typeof window.BOARD_DATA === "object" ? normalize(window.BOARD_DATA) : null;
-let localCopy = null;
+let localCopy = null,
+  savedBases = {};
 try {
   const raw = lsGet("board", null);
-  if (raw) localCopy = normalize(JSON.parse(raw));
-} catch (e) {}
-let savedBases = {};
-try {
-  const raw = lsGet("bases", null);
-  if (raw) savedBases = JSON.parse(raw) || {};
+  if (raw) {
+    const j = JSON.parse(raw);
+    localCopy = normalize(j);
+    if (j && j._bases && typeof j._bases === "object") savedBases = j._bases;
+  }
 } catch (e) {}
 /* this browser's copy merged with the file as the page loaded it (field by field where a base was kept) */
 let store = merge(emptyStore(), localCopy || emptyStore());
 if (fileCopy)
   for (const c of COLLS)
-    for (const id of Object.keys(fileCopy[c])) {
-      const b = savedBases[c + ":" + id];
-      store[c][id] = merge3(
-        store[c][id],
-        fileCopy[c][id],
-        b && typeof b === "object" ? normalize({ [c]: { [id]: b } })[c][id] : null,
-      );
-    }
+    for (const id of Object.keys(fileCopy[c]))
+      store[c][id] = merge3(store[c][id], fileCopy[c][id], baseFrom(savedBases[c + ":" + id], c, id, store[c][id]));
 /* What the data file is known to hold: changes newer than this exist only in this browser. */
 let fileBase = Object.create(null);
 function setFileBase(st) {
@@ -2912,7 +2951,19 @@ function markSeen(c, id) {
 }
 
 /* ================= lanes and lookups ================= */
-const laneOf = (sec, id) => SECTIONS[sec].lanes.find((l) => l.id === id) || SECTIONS[sec].lanes[0];
+/* A lane id the settings don't have (a typo in board_data.js) shows in the first lane, with a console warning. */
+const laneWarned = new Set();
+function laneOf(sec, id) {
+  const l = SECTIONS[sec].lanes.find((x) => x.id === id);
+  if (l) return l;
+  if (!laneWarned.has(sec + ":" + id)) {
+    laneWarned.add(sec + ":" + id);
+    try {
+      console.warn(`Unknown lane "${id}" in ${sec}; the card is shown in "${SECTIONS[sec].lanes[0].name}".`);
+    } catch (e) {}
+  }
+  return SECTIONS[sec].lanes[0];
+}
 const laneKey = (sec, x) => laneOf(sec, x.lane || "todo").id;
 const isDue = (sec, x) =>
   !!x.followUp && laneKey(sec, x) !== "todo" && !laneOf(sec, x.lane || "todo").done && x.followUp <= TODAY();
@@ -3049,9 +3100,20 @@ let dirHandle = null,
   dirty = false,
   writing = false;
 let localOk = true;
+/* This browser's copy is kept together with the base of every record (what the data file held at the last read or
+   write), in one entry so another tab always gets a matching pair. When browser storage is full the copy is kept
+   without its bases (after a reload such records then merge by the newer updatedAt, as before). */
+let lastLocal = "";
 function persistLocal() {
-  localOk = lsSet("board", JSON.stringify(store));
-  lsSet("bases", JSON.stringify(unsyncedBases()));
+  let text;
+  try {
+    text = JSON.stringify({ ...store, _bases: basesOf(store) });
+  } catch (e) {
+    text = JSON.stringify(store);
+  }
+  if (text === lastLocal) return localOk;
+  localOk = lsSet("board", text) || lsSet("board", JSON.stringify(store));
+  if (localOk) lastLocal = text;
   return localOk;
 }
 let gen = 0;
@@ -3091,6 +3153,7 @@ async function readFileInto() {
         fileRecs[k] = n[c][id];
       }
     store = next;
+    persistLocal();
     checkWrapper(t);
     return "ok";
   } catch (e) {
@@ -3125,16 +3188,26 @@ async function writeFile() {
       saveErr = "bad";
     } else {
       await dailyBackup(lastRaw);
+      /* What is written is a copy taken now: an edit made while the file is being written is not in the file, so it
+         must not become the file's base (it would then look like a change the file undid). */
+      const snap = merge(store, emptyStore());
+      const text = serialize(snap);
       const fh = await dirHandle.getFileHandle(DATA_FILE, { create: true });
       const w = await fh.createWritable();
-      await w.write(serialize(store));
+      await w.write(text);
       await w.close();
-      setFileBase(store);
-      setFileRecs(store);
+      setFileBase(snap);
+      setFileRecs(snap);
       persistLocal();
       lastSaved = new Date();
       saveErr = "";
-      if (gen === g) dirty = false;
+      if (gen === g && collectionsOnly(store) === collectionsOnly(snap)) dirty = false;
+      else {
+        /* changed while writing (an edit, another tab's copy): write again */
+        dirty = true;
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(writeFile, 400);
+      }
       setTimeout(fileJobs, 50);
       myResume();
     }
@@ -3209,24 +3282,29 @@ const REMOVED_DIR = CONFIG.stageFolders.removed,
   PURGE_DAYS = CONFIG.removedPurgeDays;
 const STAGE_DIRS = [...new Set(Object.values(STAGE_DIR))];
 function splitFolder(f) {
-  const p = String(f || "").split("/");
+  const c = canonFolder(String(f || ""));
+  const p = c.split("/");
   return p.length > 1 && STAGE_DIRS.includes(p[0])
     ? { stage: p[0], name: p.slice(1).join("/") }
-    : { stage: "", name: String(f || "") };
+    : { stage: "", name: c };
 }
 /* Folders at the top of the board that are never a job's folder (a job's "folder" naming one of them would move it). */
 const RESERVED_DIRS = ["Library", "Job notes", "backups"];
 const sameName = (a, b) => String(a).normalize("NFC").toLowerCase() === String(b).normalize("NFC").toLowerCase();
 /* Why a job's "folder" value can't be a job folder, or "" when it can. Checked before anything is moved or linked:
    it must be a relative path inside the board, not a stage folder, Library, Job notes or backups, nor the board itself. */
+/* The board's own files: a "folder" naming one of them would move it. Other names with a dot ("Acme - Node.js") are
+   folders like any other. */
+const BOARD_FILES = [DATA_FILE, "organizer.config.js", "organizer.html", "index.html", "AGENTS.md", "CLAUDE.md"];
 function badFolder(f) {
   if (typeof f !== "string" || !f.trim()) return "it's empty";
   if (/^[\\/]|^[A-Za-z]:|^~/.test(f)) return "it's an absolute path";
+  f = canonFolder(f);
   if (f.includes("\\")) return "it has a backslash (use / between folders)";
   const segs = f.split("/");
   if (segs.some((x) => !x.trim() || x === "." || x === "..")) return "it has an empty, . or .. part";
   if (RESERVED_DIRS.some((r) => sameName(r, segs[0]))) return `it points into ${segs[0]}/`;
-  if (segs.length === 1 && /\.(js|html|md)$/i.test(segs[0])) return "it names a file";
+  if (segs.length === 1 && BOARD_FILES.some((n) => sameName(n, segs[0]))) return "it names one of the board's files";
   const { name } = splitFolder(f);
   const first = name.split("/")[0];
   if (STAGE_DIRS.some((d) => sameName(d, f) || sameName(d, first))) return "it names a stage folder, not a job folder";
@@ -3297,6 +3375,8 @@ const fileSig = (x) => [x.deleted ? 1 : 0, laneKey("jobs", x), x.folder || ""].j
 let purgedDay = "",
   fileFull = false;
 const badWarned = new Set();
+/* A move that failed is tried again on the next filing pass (after the next save); its message shows once. */
+const failWarned = new Map();
 async function fileJobs(full) {
   if (!dirHandle || !canWrite || VIEW_ONLY) return;
   if (full === true) fileFull = true;
@@ -3312,6 +3392,13 @@ async function fileJobs(full) {
     failed = [],
     bad = [],
     rescan = [];
+  const fail = (id, x, nm) => {
+    filedSig.delete(id);
+    const sig = fileSig(x);
+    if (failWarned.get(id) === sig) return;
+    failWarned.set(id, sig);
+    failed.push(x.company || nm);
+  };
   try {
     for (const [id, x] of Object.entries(store.jobs)) {
       if (!x || !x.folder) {
@@ -3343,7 +3430,7 @@ async function fileJobs(full) {
             await (await dirAt(REMOVED_DIR)).removeEntry(name, { recursive: true });
           } catch (e) {
             if (!e || e.name !== "NotFoundError") {
-              failed.push(x.company || name);
+              fail(id, x, name);
               continue;
             }
           }
@@ -3354,7 +3441,10 @@ async function fileJobs(full) {
         }
         continue;
       }
-      if (stage === want) continue;
+      if (stage === want) {
+        failWarned.delete(id);
+        continue;
+      }
       const target = want + "/" + name;
       try {
         let from = null;
@@ -3365,23 +3455,24 @@ async function fileJobs(full) {
           }
         const there = await hasDir(target);
         if (from && there) {
-          failed.push(x.company || name);
+          fail(id, x, name);
           continue;
         }
         if (from) {
           await moveDir(from, target);
           moved.push(x.company || name);
         } else if (!there) {
-          failed.push(x.company || name);
+          fail(id, x, name);
           continue;
         }
         const r = store.jobs[id];
         store.jobs[id] = { ...r, folder: target, updatedAt: stamp(r), changedBy: "you" };
         filedSig.set(id, fileSig(store.jobs[id]));
+        failWarned.delete(id);
         rescan.push(target);
         persist();
       } catch (e) {
-        failed.push(x.company || name);
+        fail(id, x, name);
       }
     }
     if (purge) purgedDay = TODAY();
@@ -5910,15 +6001,21 @@ function parse(md, opts) {
 const COPY =
   '<button class="hcopy" type="button" title="Copy the cues and answers in this block (examples left out)">Copy all</button>';
 const PAYNOTE = () => (CONFIG.blurPay ? '<span class="paynote">Pay · press H to show</span>' : "");
-const MINE = (k) =>
-  `<details class="mine" data-k="${esc(k)}"><summary>My version</summary><textarea rows="4" placeholder="Write your own answer here. It saves to Library › My_answers.md."></textarea></details>`;
+const ALT = (alt) => (alt ? ` data-alt="${esc(alt)}"` : "");
+const MINE = (k, alt) =>
+  `<details class="mine" data-k="${esc(k)}"${ALT(alt)}><summary>My version</summary><textarea rows="4" placeholder="Write your own answer here. It saves to Library › My_answers.md."></textarea></details>`;
 /* {.ask} on a prep sheet question: a box for what THEY answered, open from the start (same file, same saving) */
-const ASKBOX = (k) =>
-  `<details class="mine ask" data-k="${esc(k)}" data-label="Their answer" open><summary>Their answer</summary><textarea rows="3" placeholder="Type what they said. It saves to Library › My_answers.md."></textarea></details>`;
+const ASKBOX = (k, alt) =>
+  `<details class="mine ask" data-k="${esc(k)}"${ALT(alt)} data-label="Their answer" open><summary>Their answer</summary><textarea rows="3" placeholder="Type what they said. It saves to Library › My_answers.md."></textarea></details>`;
 /* opts.mineKey turns on the answer boxes (saved as "<mineKey>::<question>"); opts.ask turns {.ask} questions into
-   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped). The same question twice in one doc
-   gets its own box: the first keeps the plain key, a later one "<mineKey>::<question> #2" (#3…). The keys of every box
-   are returned in `keys`. */
+   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped).
+   A question that is in the doc more than once (a prep sheet that asks it in every round) gets a box per copy, keyed by
+   its "## " section: "<mineKey>::<question> @<section>" (a second copy in the same section adds " #2"). So removing,
+   adding or reordering the other copies never moves an answer to another round. An answer saved under the plain key
+   before the question was repeated shows in the first copy and moves to that copy's key when the sheet is shown
+   (see fillMine). A question
+   that is on the doc once uses the plain key, or its section key when it has an answer saved under one (the other
+   copies were removed). The keys of every box are returned in `keys`. */
 function renderDoc(md, prefix, opts) {
   opts = opts || {};
   const d = parse(md, opts);
@@ -5930,31 +6027,44 @@ function renderDoc(md, prefix, opts) {
     return s;
   };
   const keys = [],
-    kseen = {};
-  const keyOf = (t) => {
-    const base = opts.mineKey + "::" + normK(t);
-    kseen[base] = (kseen[base] || 0) + 1;
-    return kseen[base] > 1 ? base + " #" + kseen[base] : base;
+    total = {},
+    nth = {},
+    inSec = {};
+  const baseOf = (t) => opts.mineKey + "::" + normK(t);
+  for (const s of d.secs)
+    for (const t of s.qs.length ? s.qs.map((q) => q.title) : [s.title]) total[baseOf(t)] = (total[baseOf(t)] || 0) + 1;
+  const filled = (k) => !!(k && (MY[k] || "").trim());
+  /* the key of a question in section `sec`, and an older key to show (and move) while the box has no answer */
+  const keyOf = (t, sec) => {
+    const base = baseOf(t);
+    nth[base] = (nth[base] || 0) + 1;
+    const m = (inSec[base + "\n" + sec] = (inSec[base + "\n" + sec] || 0) + 1);
+    const sk = base + " @" + normK(sec) + (m > 1 ? " #" + m : "");
+    /* older keys: the plain one (first copy), or " #n" by position (a development version used those) */
+    const old = nth[base] === 1 ? base : base + " #" + nth[base];
+    if (total[base] > 1) return { k: sk, alt: !filled(sk) && filled(old) ? old : null };
+    return { k: filled(sk) ? sk : base, alt: null };
   };
-  const box = (k, ask) => {
-    keys.push(k);
-    return ask ? ASKBOX(k) : MINE(k);
+  const box = (kk, ask) => {
+    keys.push(kk.k);
+    if (kk.alt) keys.push(kk.alt);
+    return ask ? ASKBOX(kk.k, kk.alt) : MINE(kk.k, kk.alt);
   };
   let h = d.intro.some((x) => x.trim()) ? `<div class="hintro">${blocks(d.intro)}</div>` : "";
   const nav = [];
-  const hasMine = (t, k) => !!(opts.mineKey && (/✎/.test(t) || (MY[k] || "").trim()));
+  const hasMine = (t, kk) => !!(opts.mineKey && (/✎/.test(t) || filled(kk.k) || filled(kk.alt)));
   for (const s of d.secs) {
     const id = sid(s.title);
     nav.push({ id, title: s.title, pay: s.pay });
     h += `<section class="hs${s.pay ? " pay" : ""}" id="${id}" data-title="${esc(s.title)}"><h3 class="hs-h"><span>${inline(s.title)}</span>${s.pay ? PAYNOTE() : ""}${COPY}</h3>${blocks(s.pre)}`;
     if (!s.qs.length && opts.mineKey) {
-      const k = keyOf(s.title);
+      const k = keyOf(s.title, s.title);
       if (hasMine(s.title, k)) h += box(k);
     }
     for (const qq of s.qs) {
       let bx = "";
       if (opts.mineKey) {
-        const k = keyOf(qq.title);
+        const k = keyOf(qq.title, s.title);
         if (qq.ask && opts.ask) bx = box(k, true);
         else if (hasMine(qq.title, k)) bx = box(k);
       }
@@ -6284,21 +6394,29 @@ async function scanPrep(opts) {
 /* ---- 82-my-answers.js ---- */
 /* ================= "My version" answers (Library/My_answers.md, written only by this page) =================
    Every ✎ question in a guide or prep sheet gets a box for your own wording, and every {.ask} question on a prep
-   sheet a "Their answer" box. Prep sheet answers are keyed "prep:<job id>::<question>". Answers are kept in this
-   browser at once and written to the file about a second after you stop typing.
+   sheet a "Their answer" box. Prep sheet answers are keyed "prep:<job id>::<question>" (see renderDoc for a question
+   that is on a sheet more than once). Answers are kept in this browser at once and written to the file about a second
+   after you stop typing.
    The file is never written without reading it first: every write reads the file, merges it with this browser's
-   answers and only then writes. Merge rule: every key from both sides is kept; a box you changed since the last read
-   wins; any other key takes the file's value. If the file can't be read (no permission yet, a sync client holding it),
-   nothing is written: the answers wait in this browser and are written once the file can be read. */
+   answers and only then writes. Merge rule, per key:
+   - a box you changed since the last write wins (emptying it, or Remove, deletes the answer from the file);
+   - an answer the file lost since this browser last read it (deleted by hand, by your assistant or from another tab)
+     stays deleted: it is remembered as removed, so no other tab and no later save brings it back (a file that is
+     missing altogether deletes nothing);
+   - an answer only in this browser that the file never had is kept and written;
+   - any other key takes the file's value.
+   If the file can't be read (no permission yet, a sync client holding it), nothing is written: the answers wait in
+   this browser and are written once the file can be read. Open tabs share their waiting answers and removals key by
+   key (through browser storage), so one tab never drops what another typed. */
 const MYLK = "myAnswers",
-  MYDIRTY = "myAnswersDirty";
+  MYDIRTY = "myAnswersDirty",
+  MYGONE = "myAnswersGone",
+  MYSEEN = "myAnswersSeen";
 let MY = {},
   myLoaded = false,
   myTimer = null,
   myBusy = false,
   myAgain = false;
-/* keys changed in this browser since the file was last read and written (kept across reloads until written) */
-let myDirty = new Set();
 const normK = (k) =>
   String(k)
     .replace(/\s*[✎☐]\s*/g, " ")
@@ -6312,11 +6430,69 @@ const myJson = (name, fallback) => {
     return fallback;
   }
 };
+/* keys changed in this browser and not written yet -> the time of the change (kept across reloads until written).
+   An older copy stored a plain list of keys. */
+const dirtyFrom = (v) =>
+  new Map(
+    Array.isArray(v)
+      ? v.filter((k) => typeof k === "string").map((k) => [k, 0])
+      : Object.entries(v || {}).filter(([, t]) => typeof t === "number"),
+  );
+const timesFrom = (v) => Object.fromEntries(Object.entries(v || {}).filter(([, t]) => typeof t === "number"));
+const GONE_DAYS = 180;
 MY = myJson(MYLK, {});
-myDirty = new Set(Array.isArray(myJson(MYDIRTY, null)) ? myJson(MYDIRTY, []) : []);
+let myDirty = dirtyFrom(myJson(MYDIRTY, null));
+/* When an answer was last removed (in a box, by Remove, or from the file): key -> time. A negative time is when it
+   was given an answer again (typed, or put back in the file), so another tab's older removal doesn't undo that.
+   Forgotten after GONE_DAYS. */
+let myGone = timesFrom(myJson(MYGONE, {}));
+for (const [k, t] of Object.entries(myGone)) if (Date.now() - Math.abs(t) > GONE_DAYS * 864e5) delete myGone[k];
+const isGone = (k) => myGone[k] > 0;
+/* the keys the file held at the last read or write (null: not read yet by this version of the page) */
+let mySeen = Array.isArray(myJson(MYSEEN, null)) ? new Set(myJson(MYSEEN, [])) : null;
+/* waiting answers this tab took from another tab (key -> time), and answers this tab wrote (key -> edit time) */
+const myFromTab = new Map(),
+  mySent = new Map();
+/* Take another tab's waiting answers and removals, key by key: the later change wins. A waiting answer taken from a
+   tab that no longer lists it was written (or replaced) by that tab, so it stops waiting here too. */
+function myAbsorb() {
+  const theirs = myJson(MYLK, {}),
+    td = dirtyFrom(myJson(MYDIRTY, null)),
+    tg = timesFrom(myJson(MYGONE, {}));
+  let changed = false;
+  for (const [k, t] of Object.entries(tg)) {
+    if (Math.abs(t) <= Math.abs(myGone[k] || 0)) continue;
+    myGone[k] = t;
+    if (t > 0 && (myDirty.has(k) ? myDirty.get(k) < t : k in MY)) {
+      delete MY[k];
+      myDirty.delete(k);
+      myFromTab.delete(k);
+      changed = true;
+    }
+  }
+  for (const [k, t] of td) {
+    const mine = myDirty.get(k);
+    if ((mine !== undefined ? t > mine : t > (mySent.get(k) ?? -1)) && !(myGone[k] >= t)) {
+      if (MY[k] !== (theirs[k] ?? "")) changed = true;
+      MY[k] = typeof theirs[k] === "string" ? theirs[k] : "";
+      myDirty.set(k, t);
+      myFromTab.set(k, t);
+    }
+  }
+  for (const [k, t] of [...myFromTab])
+    if (!td.has(k) && myDirty.get(k) === t) {
+      myDirty.delete(k);
+      myFromTab.delete(k);
+    }
+  return changed;
+}
 const myKeep = () => {
+  const changed = myAbsorb();
   lsSet(MYLK, JSON.stringify(MY));
-  lsSet(MYDIRTY, JSON.stringify([...myDirty]));
+  lsSet(MYDIRTY, JSON.stringify(Object.fromEntries(myDirty)));
+  lsSet(MYGONE, JSON.stringify(myGone));
+  if (mySeen) lsSet(MYSEEN, JSON.stringify([...mySeen]));
+  return changed;
 };
 /* A line in an answer that starts with "## " is written as "\## " so it is not read back as a new question
    (a line that already starts with backslashes and "## " gets one more); reading removes one backslash. */
@@ -6343,14 +6519,25 @@ function myFromMd(t) {
   if (k) o[k] = buf.join("\n").trim();
   return o;
 }
-/* Merge what the file holds into MY (see the rule at the top). Returns true when MY changed. */
-function myMerge(disk) {
+/* Merge what the file holds into MY (see the rule at the top). Returns true when MY changed. When there is no file
+   at all (removed, or another folder was picked), nothing counts as deleted from it: every answer is written again. */
+function myMerge(disk, exists) {
+  myAbsorb();
   const out = {};
-  for (const [k, v] of Object.entries(disk)) if (v) out[k] = v;
+  for (const [k, v] of Object.entries(disk))
+    if (v) {
+      out[k] = v;
+      /* back in the file after it was removed: put back on purpose (by hand or by your assistant) */
+      if (isGone(k) && !myDirty.has(k)) myGone[k] = -Date.now();
+    }
   for (const [k, v] of Object.entries(MY)) {
     if (myDirty.has(k)) out[k] = v;
-    else if (!(k in out) && v && v.trim()) out[k] = v; // only in this browser: kept
+    else if (k in out || !v || !v.trim() || isGone(k)) continue;
+    else if (exists && mySeen && mySeen.has(k))
+      myGone[k] = Date.now(); // the file lost it since the last read
+    else out[k] = v; // never in the file: only in this browser, kept
   }
+  mySeen = new Set(Object.keys(disk).filter((k) => disk[k]));
   const changed = JSON.stringify(out) !== JSON.stringify(MY);
   MY = out;
   return changed;
@@ -6381,7 +6568,7 @@ async function myLoad() {
       myRetry();
       return false;
     }
-    const changed = myMerge(r ? myFromMd(r.text) : {});
+    const changed = myMerge(r ? myFromMd(r.text) : {}, !!r);
     myLoaded = true;
     myKeep();
     if (changed) myFill();
@@ -6410,16 +6597,24 @@ async function myWrite() {
       return false;
     }
     const onDisk = r ? myFromMd(r.text) : {};
-    const changed = myMerge(onDisk);
+    const changed = myMerge(onDisk, !!r);
     myLoaded = true;
-    const sent = new Set(myDirty);
+    const sent = new Map(myDirty),
+      vals = { ...MY };
     const text = myToMd();
     /* write only when this browser has something the file lacks: an edit, or an answer only kept here */
     const needed = sent.size > 0 || Object.entries(MY).some(([k, v]) => v && v.trim() && onDisk[k] !== v);
     if (needed && (!r || r.text !== text)) await FS.write(MYPATH, text);
-    for (const k of sent) if (myDirty.has(k)) myDirty.delete(k);
+    mySeen = new Set(Object.keys(vals).filter((k) => vals[k] && vals[k].trim()));
     /* edits typed while the write ran stay marked and are written next time */
-    for (const [k, v] of Object.entries(MY)) if (!v || !v.trim()) delete MY[k];
+    for (const [k, t] of sent)
+      if (myDirty.get(k) === t && MY[k] === vals[k]) {
+        myDirty.delete(k);
+        myFromTab.delete(k);
+        mySent.set(k, t);
+        if (!vals[k] || !vals[k].trim()) myGone[k] = Date.now();
+      }
+    for (const [k, v] of Object.entries(MY)) if ((!v || !v.trim()) && !myDirty.has(k)) delete MY[k];
     myKeep();
     if (changed) myFill();
     ok = true;
@@ -6464,6 +6659,15 @@ window.addEventListener("pagehide", myFlush);
 const mineLabel = (det, filled) => (det.dataset.label || "My version") + (filled ? " ✓" : "");
 function fillMine(det) {
   const k = det.dataset.k;
+  /* an answer saved under the question's older key (before the question was repeated) moves to this box's key */
+  const alt = det.dataset.alt;
+  if (alt) {
+    if (!(MY[k] || "").trim() && (MY[alt] || "").trim()) {
+      mySet(k, MY[alt]);
+      mySet(alt, "");
+    }
+    delete det.dataset.alt;
+  }
   const ta = det.querySelector("textarea");
   if (ta && document.activeElement !== ta) ta.value = MY[k] || "";
   const filled = !!(MY[k] && MY[k].trim());
@@ -6475,9 +6679,16 @@ function fillMine(det) {
 /* Change one answer (an empty value removes it from the file on the next write). */
 function mySet(k, v) {
   MY[k] = v;
-  myDirty.add(k);
+  myDirty.set(k, Math.max(Date.now(), (myDirty.get(k) || 0) + 1));
+  myFromTab.delete(k);
+  if (v && v.trim() && myGone[k]) myGone[k] = -Date.now();
   mySave();
 }
+/* another tab typed, removed or wrote an answer: show it here too */
+window.addEventListener("storage", (e) => {
+  if (![MYLK, MYDIRTY, MYGONE].some((n) => e.key === lsKey(n))) return;
+  if (myAbsorb()) myFill();
+});
 function wireMine(root) {
   $qa("details.mine", root).forEach((det) => {
     fillMine(det);
@@ -8334,13 +8545,29 @@ async function onFocus() {
 window.addEventListener("focus", () => {
   focusRun = onFocus();
 });
-/* Keep two open copies of the page in step. An open panel shows the other tab's change like a change from the folder. */
+/* Keep two open copies of the page in step. An open panel shows the other tab's change like a change from the folder.
+   The other tab's records merge field by field, like the file's: against the older of the two tabs' bases (the version
+   both copies came from), so a tab that loaded an older file doesn't undo what this tab took from a newer one. */
+function mergeOtherTab(raw) {
+  const theirs = normalize(raw);
+  const ob = raw && raw._bases && typeof raw._bases === "object" ? raw._bases : {};
+  const next = merge(store, emptyStore());
+  for (const c of COLLS)
+    for (const id of Object.keys(theirs[c])) {
+      const k = c + ":" + id;
+      let base = baseFrom(ob[k], c, id, theirs[c][id]);
+      const mine = fileRecs[k];
+      if (mine && (!base || ts(mine) < ts(base))) base = mine;
+      next[c][id] = merge3(next[c][id], theirs[c][id], base);
+    }
+  store = next;
+}
 window.addEventListener("storage", (e) => {
   if (e.key !== lsKey("board") || !e.newValue) return;
   try {
     const before = collectionsOnly(store);
     const recBefore = openRef ? JSON.stringify(get(openRef.sec, openRef.id) || null) : "";
-    store = merge(store, normalize(JSON.parse(e.newValue)));
+    mergeOtherTab(JSON.parse(e.newValue));
     if (collectionsOnly(store) !== before) {
       if (canWrite) {
         gen++;

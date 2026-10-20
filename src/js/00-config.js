@@ -156,7 +156,9 @@ function checkConfig(cfg) {
      where a number belongs) falls back to the default with a warning, rather than leaving a blank page. */
   const kind = (v) => (v === null ? "null" : Array.isArray(v) ? "list" : typeof v);
   const clone = (v) => (v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v);
-  const NULLABLE = ["demo", "library.hunterScript", "library.hunterPlaybook"];
+  /* null where it can mean "none": no owner name, no outreach guide, and the default number of days to keep removed folders */
+  const NULLABLE = ["demo", "library.hunterScript", "library.hunterPlaybook", "library.outreachDoc", "ownerName"];
+  if (cfg.removedPurgeDays === null) cfg.removedPurgeDays = DEFAULT_CONFIG.removedPurgeDays;
   const OWN_CHECK = ["lanes", "callTypes", "stale", "plan.weekNames"];
   const fix = (obj, dflt, path) => {
     for (const k of Object.keys(dflt)) {
@@ -196,6 +198,10 @@ function checkConfig(cfg) {
       return false;
     }
   };
+  /* a RegExp literal works too (its pattern is used) */
+  cfg.library.pillLabels = cfg.library.pillLabels.map((pl) =>
+    Array.isArray(pl) && pl[0] instanceof RegExp ? [pl[0].source, ...pl.slice(1)] : pl,
+  );
   cfg.library.pillLabels = cfg.library.pillLabels.filter((pl) => {
     const good = Array.isArray(pl) && reOk(pl[0]) && typeof pl[1] === "string";
     if (!good) warn(`library.pillLabels has an entry that isn't ["pattern", "label"]; it was skipped.`);
@@ -209,7 +215,7 @@ function checkConfig(cfg) {
     }
   }
   /* sheet buttons: a doc id and a label; a key is one character that no built-in shortcut uses */
-  const TAKEN = ["n", "g", "h", "/", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+  const TAKEN = ["n", "g", "/", "?", "1", "2", "3", "4", "5", "6", "7", "8", "9"].concat(cfg.blurPay ? ["h"] : []);
   const usedKeys = new Set();
   cfg.library.sheetButtons = cfg.library.sheetButtons
     .map((b, i) => {

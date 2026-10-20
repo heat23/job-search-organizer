@@ -199,15 +199,21 @@ function parse(md, opts) {
 const COPY =
   '<button class="hcopy" type="button" title="Copy the cues and answers in this block (examples left out)">Copy all</button>';
 const PAYNOTE = () => (CONFIG.blurPay ? '<span class="paynote">Pay · press H to show</span>' : "");
-const MINE = (k) =>
-  `<details class="mine" data-k="${esc(k)}"><summary>My version</summary><textarea rows="4" placeholder="Write your own answer here. It saves to Library › My_answers.md."></textarea></details>`;
+const ALT = (alt) => (alt ? ` data-alt="${esc(alt)}"` : "");
+const MINE = (k, alt) =>
+  `<details class="mine" data-k="${esc(k)}"${ALT(alt)}><summary>My version</summary><textarea rows="4" placeholder="Write your own answer here. It saves to Library › My_answers.md."></textarea></details>`;
 /* {.ask} on a prep sheet question: a box for what THEY answered, open from the start (same file, same saving) */
-const ASKBOX = (k) =>
-  `<details class="mine ask" data-k="${esc(k)}" data-label="Their answer" open><summary>Their answer</summary><textarea rows="3" placeholder="Type what they said. It saves to Library › My_answers.md."></textarea></details>`;
+const ASKBOX = (k, alt) =>
+  `<details class="mine ask" data-k="${esc(k)}"${ALT(alt)} data-label="Their answer" open><summary>Their answer</summary><textarea rows="3" placeholder="Type what they said. It saves to Library › My_answers.md."></textarea></details>`;
 /* opts.mineKey turns on the answer boxes (saved as "<mineKey>::<question>"); opts.ask turns {.ask} questions into
-   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped). The same question twice in one doc
-   gets its own box: the first keeps the plain key, a later one "<mineKey>::<question> #2" (#3…). The keys of every box
-   are returned in `keys`. */
+   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped).
+   A question that is in the doc more than once (a prep sheet that asks it in every round) gets a box per copy, keyed by
+   its "## " section: "<mineKey>::<question> @<section>" (a second copy in the same section adds " #2"). So removing,
+   adding or reordering the other copies never moves an answer to another round. An answer saved under the plain key
+   before the question was repeated shows in the first copy and moves to that copy's key when the sheet is shown
+   (see fillMine). A question
+   that is on the doc once uses the plain key, or its section key when it has an answer saved under one (the other
+   copies were removed). The keys of every box are returned in `keys`. */
 function renderDoc(md, prefix, opts) {
   opts = opts || {};
   const d = parse(md, opts);
@@ -219,31 +225,44 @@ function renderDoc(md, prefix, opts) {
     return s;
   };
   const keys = [],
-    kseen = {};
-  const keyOf = (t) => {
-    const base = opts.mineKey + "::" + normK(t);
-    kseen[base] = (kseen[base] || 0) + 1;
-    return kseen[base] > 1 ? base + " #" + kseen[base] : base;
+    total = {},
+    nth = {},
+    inSec = {};
+  const baseOf = (t) => opts.mineKey + "::" + normK(t);
+  for (const s of d.secs)
+    for (const t of s.qs.length ? s.qs.map((q) => q.title) : [s.title]) total[baseOf(t)] = (total[baseOf(t)] || 0) + 1;
+  const filled = (k) => !!(k && (MY[k] || "").trim());
+  /* the key of a question in section `sec`, and an older key to show (and move) while the box has no answer */
+  const keyOf = (t, sec) => {
+    const base = baseOf(t);
+    nth[base] = (nth[base] || 0) + 1;
+    const m = (inSec[base + "\n" + sec] = (inSec[base + "\n" + sec] || 0) + 1);
+    const sk = base + " @" + normK(sec) + (m > 1 ? " #" + m : "");
+    /* older keys: the plain one (first copy), or " #n" by position (a development version used those) */
+    const old = nth[base] === 1 ? base : base + " #" + nth[base];
+    if (total[base] > 1) return { k: sk, alt: !filled(sk) && filled(old) ? old : null };
+    return { k: filled(sk) ? sk : base, alt: null };
   };
-  const box = (k, ask) => {
-    keys.push(k);
-    return ask ? ASKBOX(k) : MINE(k);
+  const box = (kk, ask) => {
+    keys.push(kk.k);
+    if (kk.alt) keys.push(kk.alt);
+    return ask ? ASKBOX(kk.k, kk.alt) : MINE(kk.k, kk.alt);
   };
   let h = d.intro.some((x) => x.trim()) ? `<div class="hintro">${blocks(d.intro)}</div>` : "";
   const nav = [];
-  const hasMine = (t, k) => !!(opts.mineKey && (/✎/.test(t) || (MY[k] || "").trim()));
+  const hasMine = (t, kk) => !!(opts.mineKey && (/✎/.test(t) || filled(kk.k) || filled(kk.alt)));
   for (const s of d.secs) {
     const id = sid(s.title);
     nav.push({ id, title: s.title, pay: s.pay });
     h += `<section class="hs${s.pay ? " pay" : ""}" id="${id}" data-title="${esc(s.title)}"><h3 class="hs-h"><span>${inline(s.title)}</span>${s.pay ? PAYNOTE() : ""}${COPY}</h3>${blocks(s.pre)}`;
     if (!s.qs.length && opts.mineKey) {
-      const k = keyOf(s.title);
+      const k = keyOf(s.title, s.title);
       if (hasMine(s.title, k)) h += box(k);
     }
     for (const qq of s.qs) {
       let bx = "";
       if (opts.mineKey) {
-        const k = keyOf(qq.title);
+        const k = keyOf(qq.title, s.title);
         if (qq.ask && opts.ask) bx = box(k, true);
         else if (hasMine(qq.title, k)) bx = box(k);
       }

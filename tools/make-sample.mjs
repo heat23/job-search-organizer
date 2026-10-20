@@ -291,7 +291,7 @@ data.plan.w1a.done = true;
 data.plan.w1a.doneAt = iso(-9);
 const header =
   "// Job Search Organizer data. The page and any tool you trust (a script, an AI assistant) may edit this file.\n" +
-  "// Rules: every record has updatedAt (ISO time, UTC with Z); when two copies differ, the newer one wins.\n" +
+  "// Rules: stamp every record you add or change with updatedAt = now (ISO time, UTC with Z); an older copy never wins.\n" +
   "// Never delete a record outright: set deleted:true and a new updatedAt. Other tools also set changedBy to their name.\n";
 const write = (board, obj) => {
   mkdirSync(join(ROOT, "boards", board), { recursive: true });
