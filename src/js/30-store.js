@@ -87,18 +87,20 @@ function normalize(src) {
   }
   return out;
 }
-/* ---- merging: content-based ----
+/* ---- merging ----
    For every record the page keeps a short history (`hist`) of the values the data file held when the page read or
-   wrote it: per field, the last few values as short hashes, kept with this browser's copy. When the file's record
-   differs from this browser's, field by field:
-   - the file's value is one the page has seen before (and isn't yours): an older copy written back (a tool saved what
-     it read before your change). Yours stays, and the next save writes it back;
-   - the file's value is new: an edit made by another tool. It is taken, unless you changed that field too since the
-     last read; then the later change wins (when you changed it, against the file record's updatedAt; one more than
-     5 minutes ahead of this clock is read as now, see capStamp);
-   - deleted and removedAt count as one field, so Remove and Restore follow the same rule.
-   updatedAt only breaks ties. A record without a history (browser storage was full, or a copy from before this version)
-   falls back to: the record with the newer updatedAt wins.
+   wrote it: per field, the last few values as short hashes (the first one is the last synced value), plus the highest
+   updatedAt it has seen for the record (`seenAt`), kept with this browser's copy. An updatedAt more than 5 minutes
+   ahead of this clock is read as now (see capStamp), so a wrong stamp can't block later edits. When the file's record
+   differs from this browser's, field by field (deleted and removedAt count as one field):
+   - the file's record has an updatedAt newer than any seen: another tool edited it. Every field it changed since the
+     last sync is taken, also a value the field had before (a card moved back, a card restored);
+   - otherwise (an older copy written back, or a tool that didn't stamp its edit) the values decide: a value the page
+     has seen before is an older copy, so yours stays and the next save writes it back; a value never seen is an edit
+     and is taken.
+   Where you changed the same field since the last sync, the later change wins (when you changed it, against the file
+   record's updatedAt). A record without a history (browser storage was full, or a copy from before this version) falls
+   back to: the record with the newer updatedAt wins.
    Open tabs share one copy in browser storage and merge each other's copies field by field by the time this browser last
    changed each field (`ftime`), so all tabs settle on the latest change. */
 const canon = (v) =>
@@ -155,7 +157,8 @@ function vh(r, u) {
    ftime: "c:id" -> {unit: time this browser last changed it}. */
 const HMAX = 5;
 let hist = new Map(),
-  ftime = new Map();
+  ftime = new Map(),
+  seenAt = new Map();
 const seenOf = (H, u) => H[u] || [vh(null, u)];
 /* The data file holds `rec` now (read from it, or written to it). */
 function rememberFile(k, rec) {
@@ -167,6 +170,7 @@ function rememberFile(k, rec) {
     H[u] = [x, ...l.filter((y) => y !== x)].slice(0, HMAX);
   }
   hist.set(k, H);
+  seenAt.set(k, Math.max(seenAt.get(k) || 0, ts(rec)));
 }
 /* You (or this page) changed a record: note when each field changed, for merging with other tabs. */
 function touch(k, before, after) {
@@ -187,13 +191,16 @@ function mergeFile(k, cur, disk, stale) {
   const H = hist.get(k);
   if (!H) return ts(disk) > ts(cur) ? disk : cur;
   const T = ftime.get(k) || {};
+  const newer = ts(disk) > (seenAt.get(k) || 0);
   const out = { ...cur };
   let took = false;
   for (const u of unitsOf(cur, disk)) {
     if (sameUnit(cur, disk, u)) continue;
-    const l = seenOf(H, u);
-    if (l.includes(vh(disk, u))) {
-      if (stale) stale.add(k);
+    const l = seenOf(H, u),
+      d = vh(disk, u);
+    /* newer: a field the file didn't change since the last sync stays yours; older: a value seen before is an old copy */
+    if (newer ? d === l[0] : l.includes(d)) {
+      if (!newer && stale) stale.add(k);
       continue;
     }
     if (vh(cur, u) !== l[0] && (T[u] || ts(cur)) >= ts(disk)) continue;
@@ -236,7 +243,8 @@ function mergeTab(k, cur, theirs, tT) {
   return clean(out);
 }
 /* The history and change times as kept in browser storage, next to the copy `st`. A record whose every field's history
-   is just its current value is stored as 1 (most records); otherwise only the fields that differ are listed. Change times
+   is just its current value, and whose highest seen updatedAt is its own, is stored as 1 (most records); otherwise only
+   what differs is listed ("@": the highest seen updatedAt). Change times
    older than two days are dropped (they only matter while two tabs are open). */
 const hoCache = new WeakMap(); // record -> [its history object, what is stored] (a history is replaced, never changed)
 function histOut(st) {
@@ -257,6 +265,8 @@ function histOut(st) {
         const l = seenOf(H, u);
         if (l.length !== 1 || l[0] !== vh(rec, u)) (o = o || {})[u] = l.join(" ");
       }
+      const at = seenAt.get(k) || 0;
+      if (at !== ts(rec)) (o = o || {})["@"] = at.toString(36);
       out[k] = o || 1;
       hoCache.set(rec, [H, out[k]]);
     }
@@ -279,8 +289,8 @@ const timesIn = (o) => {
     for (const [u, t] of Object.entries(o)) if (parseInt(t, 36) > 0) T[u] = parseInt(t, 36);
   return T;
 };
-/* A stored history back, for the records of `st`. */
-function histIn(saved, st) {
+/* A stored history back, for the records of `st` (their highest seen updatedAt goes into `at`). */
+function histIn(saved, st, at) {
   const m = new Map();
   if (!saved || typeof saved !== "object") return m;
   for (const [k, v] of Object.entries(saved)) {
@@ -292,8 +302,9 @@ function histIn(saved, st) {
     const o = v && typeof v === "object" ? v : {};
     const H = {};
     for (const u of new Set([...unitsOf(rec), ...Object.keys(o)]))
-      H[u] = typeof o[u] === "string" && o[u] ? o[u].split(" ").slice(0, HMAX) : [vh(rec, u)];
+      if (u !== "@") H[u] = typeof o[u] === "string" && o[u] ? o[u].split(" ").slice(0, HMAX) : [vh(rec, u)];
     m.set(k, H);
+    at.set(k, parseInt(o["@"], 36) || ts(rec));
   }
   return m;
 }
@@ -360,7 +371,7 @@ try {
 } catch (e) {}
 /* this browser's copy merged with the file as the page loaded it */
 let store = copyStore(localCopy || emptyStore());
-hist = histIn(saved._hist, store);
+hist = histIn(saved._hist, store, seenAt);
 for (const [k, v] of Object.entries(saved._ft && typeof saved._ft === "object" ? saved._ft : {}))
   ftime.set(k, timesIn(v));
 /* a copy kept by an earlier version holds the record as the file had it ("bases"; 1 = the record itself) */

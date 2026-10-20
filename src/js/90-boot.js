@@ -182,7 +182,9 @@ function mergeOtherTab(raw) {
       next[c][id] = mergeTab(k, next[c][id], theirs[c][id], timesIn(tf[k]));
     }
   store = next;
-  for (const [k, H] of histIn(raw && raw._hist, theirs)) {
+  const at = new Map();
+  for (const [k, H] of histIn(raw && raw._hist, theirs, at)) {
+    seenAt.set(k, Math.max(seenAt.get(k) || 0, at.get(k)));
     const had = hist.get(k);
     if (!had) hist.set(k, H);
     else {
