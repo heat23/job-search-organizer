@@ -134,11 +134,14 @@ Job Search/
 ├── 2 - Applied/  3 - Closed/  4 - Removed/
 ├── Job notes/<job>/        prep.md, my_notes.md, outreach.md, posting.md
 ├── Library/                your guides (Markdown), My_answers.md
-└── backups/                daily copies of the data file and your notes
+└── backups/                daily copies of the data file and your notes (Restore a backup… uses them)
 ```
 
 - Chrome and Edge can write to a folder you pick (the [File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_API)). Other browsers open the page as view-only.
 - Every change is also kept in the browser, so nothing is lost if saving pauses. If a notes file changes on disk while you type, both versions are kept.
+- **Your assistant and the page can both edit the board.** The page remembers the last few values it saw in `board_data.js`, so an older copy written back over your changes (a tool saving what it read earlier) never undoes them: your newer values are kept, the file's older copy goes to `backups/`, and the status line says so. A value it has never seen is an edit and is taken.
+- **Backups:** `backups/` gets a copy of `board_data.js` each day before the first save, and your notes and `My_answers.md` each day. To go back, click **Restore a backup…** at the bottom of the page: it lists those copies with their date and card counts (or pick any `.js` copy, such as one from **Download a backup copy**), asks first, saves the current file to `backups/board_data_before_restore_<time>.js`, and has an Undo. Copying an old file over `board_data.js` by hand doesn't restore anything: the page reads it as an older copy and keeps the newer values.
+- **`Library/My_answers.md`** holds the answers you type in the "My version" and "Their answer" boxes. If it ever reads as empty or cut short (a sync client or an editor caught halfway), nothing is deleted: the page copies the odd file to `backups/` and writes your answers back. Deleting one answer from the file by hand works; to remove them all, use **Clear all my answers…** in the Prep library (it has an Undo).
 - Everything is plain text, so you can read it, search it or back it up with any tool, and it still works if this project goes away.
 - **`board_data.js` and `organizer.config.js` are loaded by the page as scripts**, so whatever is in them runs in the page, which can read and write your board folder. Only let tools you trust write them. An AI assistant should change only the JSON object in `board_data.js` and never add code (`AGENTS.md` tells it so). The page reads the file from your folder with a JSON parser, never runs it again, and warns you if it holds anything besides the comment lines and `window.BOARD_DATA = {…};`. That warning comes after the page has loaded the file, so treat it as a check, not a protection.
 
@@ -161,8 +164,8 @@ A job gets a prep sheet as soon as `Job notes/<job id>/prep.md` exists. It opens
 ## How it's built
 
 - **No framework, no runtime dependencies.** 18 small plain-JavaScript files under `src/`, joined by an 80-line build script into one HTML file that runs from `file://`.
-- **Safe with other writers.** When the page and another tool both change a record, they merge field by field (each side keeps the fields it changed, and the newer `updatedAt` wins a field both changed), also after a reload. A tool that writes back an older copy of the file never undoes what you saved: records older than your saved version are ignored and written back. Nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
-- **Tested in a real browser.** 441 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
+- **Safe with other writers.** When the page and another tool both change a record, they merge field by field by content, also after a reload: the page remembers the last few values it saw in each field, so a value it has seen before is an older copy written back (your newer value is kept) and a new value is an edit (taken; when both sides changed the same field, the later change wins). Timestamps only break ties, so a wrong clock or a future date can't make edits vanish. Nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
+- **Tested in a real browser.** 513 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
 - **Private.** Guides are escaped before rendering, and a test fails if the page makes any network request.
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -173,7 +176,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 npm install
 npx playwright install chromium   # once, for the tests
 npm run build                     # src/ -> boards/*/organizer.html
-npm test                          # 441 browser checks
+npm test                          # 513 browser checks
 npm run demo                      # the live demo page -> _site/index.html
 ```
 

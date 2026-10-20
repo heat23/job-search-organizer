@@ -206,3 +206,183 @@ async function startup() {
   } else if (!h) msg += " No second folder chosen yet.";
   if (msg) bkStatus(msg);
 }
+
+/* ================= Restore a backup… =================
+   Lists backups/board_data_*.js (the daily copies, the older copies a merge kept and the copies saved before a restore),
+   or takes any .js file you pick. After a confirm, the data file as it is now goes to
+   backups/board_data_before_restore_<time>.js, then the backup's records replace this board's: each one is stamped as a
+   change you just made, so it wins everywhere (the file, other tabs, the next merge). Cards added since the backup are
+   removed (Restore brings one back). The toast can undo it. Copying an old file over board_data.js does not restore
+   anything: the page reads that as an older copy and keeps the newer values. */
+const plural = (n, noun) => `${n} ${n === 1 ? noun : noun === "person" ? "people" : noun + "s"}`;
+function backupInfo(text) {
+  try {
+    const data = normalize(parseDataText(text));
+    const n = (c) => Object.values(data[c]).filter((r) => !r.deleted).length;
+    const counts = [...BOARDS.map((c) => plural(n(c), SECTIONS[c].noun)), plural(n("todos"), "to-do")].join(", ");
+    return { data, counts };
+  } catch (e) {
+    return null;
+  }
+}
+async function backupList() {
+  const out = [];
+  try {
+    const bdir = await dirHandle.getDirectoryHandle("backups");
+    const base = DATA_FILE.replace(/\.js$/, "") + "_";
+    for await (const [name, h] of bdir.entries())
+      if (h.kind === "file" && name.startsWith(base) && name.endsWith(".js")) {
+        const f = await h.getFile();
+        out.push({ name, time: f.lastModified, text: await f.text() });
+      }
+  } catch (e) {}
+  return out.sort((a, b) => b.time - a.time);
+}
+const whenLabel = (t) =>
+  new Date(t).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+/* the board's records replaced by `src` (see the top); returns the number of cards restored */
+function replaceStore(src) {
+  const next = emptyStore();
+  for (const c of COLLS)
+    for (const id of new Set([...Object.keys(store[c]), ...Object.keys(src[c])])) {
+      const old = Object.hasOwn(store[c], id) ? store[c][id] : null;
+      const r = Object.hasOwn(src[c], id) ? src[c][id] : null;
+      if (!r && old.deleted) {
+        next[c][id] = old;
+        continue;
+      }
+      const rec = clean({
+        ...(r || { ...old, deleted: true, removedAt: nowIso() }),
+        updatedAt: stamp(old),
+        changedBy: "you",
+      });
+      touch(c + ":" + id, old, rec);
+      next[c][id] = rec;
+    }
+  store = next;
+  persist();
+  render();
+  if (openRef) refreshDrawer();
+}
+async function restoreBackup(text, label) {
+  if (!dirHandle || !canWrite) {
+    showToast("Turn on saving to your folder first, so the restored board can be saved.");
+    return false;
+  }
+  const info = backupInfo(text);
+  if (!info) {
+    showToast("That file isn't a board backup (it has no window.BOARD_DATA = {…}). Nothing was changed.");
+    return false;
+  }
+  /* take in what the file holds now, and keep a copy of it */
+  if ((await readFileInto()) === "bad") {
+    showToast(`${DATA_FILE} has an error right now. Nothing was changed.`);
+    return false;
+  }
+  try {
+    if (lastRaw.trim()) {
+      const stamp2 = TODAY() + "_" + new Date().toTimeString().slice(0, 8).replace(/:/g, "");
+      await writeTo(
+        await dirHandle.getDirectoryHandle("backups", { create: true }),
+        `${DATA_FILE.replace(/\.js$/, "")}_before_restore_${stamp2}.js`,
+        lastRaw,
+      );
+    }
+  } catch (e) {
+    showToast("Couldn't save a copy of the current board first, so nothing was restored.");
+    return false;
+  }
+  const before = copyStore(store);
+  replaceStore(info.data);
+  await writeFile();
+  showToast(`Restored the copy from ${label} (${info.counts}). Your board as it was is in backups/.`, async () => {
+    replaceStore(before);
+    await writeFile();
+    showToast("Restore undone.");
+  });
+  return true;
+}
+async function openRestore() {
+  if (VIEW_ONLY) return blockedEdit();
+  if (!dirHandle || !canWrite) {
+    showToast("Turn on saving to your folder first: backups are kept in its backups/ folder.");
+    return;
+  }
+  lastFocusKey = focusKey();
+  const root = $("#drawerRoot");
+  root.textContent = "";
+  openRef = null;
+  const list = el("div", { class: "rlist" }, el("p", { class: "muted", text: "Looking in backups/…" }));
+  const pick = el("input", { type: "file", accept: ".js,text/javascript", class: "rpick", hidden: true });
+  const d = el(
+    "aside",
+    { class: "drawer restore", role: "dialog", "aria-modal": "true", "aria-labelledby": "rTitle", tabindex: "-1" },
+    el("button", { class: "close", type: "button", "aria-label": "Close", text: "×", onclick: closeDrawer }),
+    el("h2", { id: "rTitle", text: "Restore a backup" }),
+    el("p", {
+      class: "muted",
+      text: "Pick the copy to go back to. Your board as it is now is saved to backups/ first, and you can undo right after.",
+    }),
+    list,
+    el(
+      "p",
+      {},
+      el("button", { class: "btn small", type: "button", text: "Choose a file…", onclick: () => pick.click() }),
+      pick,
+    ),
+  );
+  root.append(el("div", { class: "scrim", onclick: closeDrawer }), d);
+  setTimeout(() => d.focus(), 0);
+  /* one row per copy; Restore… asks first */
+  const row = (title, sub, text) => {
+    const info = backupInfo(text);
+    const acts = el("div", { class: "racts" });
+    const idle = () => {
+      acts.textContent = "";
+      acts.append(
+        info
+          ? el("button", { class: "btn small", type: "button", text: "Restore…", onclick: ask })
+          : el("span", { class: "muted", text: "can't be read" }),
+      );
+    };
+    const ask = () => {
+      acts.textContent = "";
+      acts.append(
+        el("span", { text: "Replace your board with this copy?" }),
+        el("button", {
+          class: "btn small primary",
+          type: "button",
+          text: "Restore",
+          onclick: async () => {
+            if (await restoreBackup(text, title)) closeDrawer();
+          },
+        }),
+        el("button", { class: "btn small", type: "button", text: "Cancel", onclick: idle }),
+      );
+    };
+    idle();
+    return el(
+      "div",
+      { class: "rrow" },
+      el("div", {}, el("b", { text: title }), el("small", { text: sub + (info ? " · " + info.counts : "") })),
+      acts,
+    );
+  };
+  pick.addEventListener("change", async () => {
+    const f = pick.files && pick.files[0];
+    if (!f) return;
+    const text = await f.text();
+    list.prepend(row(f.name, "chosen file", text));
+    pick.value = "";
+  });
+  const items = await backupList();
+  list.textContent = "";
+  if (!items.length) list.append(el("p", { class: "muted", text: "No backups in backups/ yet." }));
+  for (const b of items) list.append(row(whenLabel(b.time), b.name, b.text));
+}

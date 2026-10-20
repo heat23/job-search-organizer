@@ -12,7 +12,10 @@
    - an answer only in this browser that the file never had is kept and written;
    - any other key takes the file's value.
    If the file can't be read (no permission yet, a sync client holding it), nothing is written: the answers wait in
-   this browser and are written once the file can be read. Open tabs share their waiting answers and removals key by
+   this browser and are written once the file can be read. A file that reads as empty, lacks its "# My answers" title,
+   or lost every answer at once (a sync client or an editor caught halfway) deletes nothing: the odd file is copied to
+   backups/ and the file is written again from this browser's answers. Removing every answer on purpose is done with
+   "Clear all my answers" in the Prep library. Open tabs share their waiting answers and removals key by
    key (through browser storage), so one tab never drops what another typed. */
 const MYLK = "myAnswers",
   MYDIRTY = "myAnswersDirty",
@@ -94,10 +97,16 @@ function myAbsorb() {
 }
 const myKeep = () => {
   const changed = myAbsorb();
-  lsSet(MYLK, JSON.stringify(MY));
-  lsSet(MYDIRTY, JSON.stringify(Object.fromEntries(myDirty)));
-  lsSet(MYGONE, JSON.stringify(myGone));
+  const ok =
+    lsSet(MYLK, JSON.stringify(MY)) &&
+    lsSet(MYDIRTY, JSON.stringify(Object.fromEntries(myDirty))) &&
+    lsSet(MYGONE, JSON.stringify(myGone));
   if (mySeen) lsSet(MYSEEN, JSON.stringify([...mySeen]));
+  /* browser storage full: the status line warns while the answers aren't in the file either */
+  if (ok !== myLocalOk) {
+    myLocalOk = ok;
+    renderStatus();
+  }
   return changed;
 };
 /* A line in an answer that starts with "## " is written as "\## " so it is not read back as a new question
@@ -127,6 +136,27 @@ function myFromMd(t) {
 }
 /* Merge what the file holds into MY (see the rule at the top). Returns true when MY changed. When there is no file
    at all (removed, or another folder was picked), nothing counts as deleted from it: every answer is written again. */
+const myHas = () => Object.values(MY).some((v) => v && v.trim());
+/* The file looks wrong (see the top): empty, no title, or none of the answers it had at the last read, while this
+   browser has answers. */
+function myOdd(text, disk) {
+  if (!myHas()) return false;
+  if (!text.trim() || !/^\uFEFF?\s*# My answers/.test(text)) return true;
+  return !!(mySeen && mySeen.size && ![...mySeen].some((k) => disk[k]));
+}
+async function myBackupOdd(text) {
+  const n = Object.values(MY).filter((v) => v && v.trim()).length;
+  try {
+    if (text.trim())
+      await FS.write(
+        `backups/My_answers_odd_${TODAY()}_${new Date().toTimeString().slice(0, 5).replace(":", "")}.md`,
+        text,
+      );
+  } catch (e) {}
+  showToast(
+    `${MYPATH.split("/").pop()} looked empty or cut short, so your ${n} answer${n === 1 ? " was" : "s were"} written back from this browser${text.trim() ? " (the odd file is in backups/)" : ""}.`,
+  );
+}
 function myMerge(disk, exists) {
   myAbsorb();
   const out = {};
@@ -143,10 +173,39 @@ function myMerge(disk, exists) {
       myGone[k] = Date.now(); // the file lost it since the last read
     else out[k] = v; // never in the file: only in this browser, kept
   }
-  mySeen = new Set(Object.keys(disk).filter((k) => disk[k]));
+  if (exists) mySeen = new Set(Object.keys(disk).filter((k) => disk[k]));
   const changed = JSON.stringify(out) !== JSON.stringify(MY);
   MY = out;
   return changed;
+}
+/* A prep sheet's answers saved under an older key (the question alone, or with " #2" by position) move to the key of
+   the question's box ("<question> @<section>", see renderDoc) only when that is certain: the question is on the sheet
+   once and it is the only older answer to it. Otherwise they stay under "Saved answers from earlier versions" on the
+   sheet. This runs as soon as the sheet and the file's answers are both known (so an answer moves while the sheet still
+   has the round it was typed in), and before a sheet is shown. */
+function myMigrate() {
+  if (!myLoaded) return;
+  for (const [id, md] of Object.entries(PREPTXT)) {
+    const pre = "prep:" + id + "::";
+    if (!validPrep(md) || !Object.keys(MY).some((k) => k.startsWith(pre) && !k.includes(" @"))) continue;
+    const where = {};
+    for (const s of parse(md).secs)
+      for (const t of s.qs.length ? s.qs.map((q) => q.title) : [s.title]) {
+        const base = pre + normK(t);
+        where[base] = where[base] === undefined ? s.title : null;
+      }
+    for (const [base, sec] of Object.entries(where)) {
+      const sk = base + " @" + normK(sec || "");
+      if (sec === null || (MY[sk] || "").trim()) continue;
+      const old = Object.keys(MY).filter(
+        (k) =>
+          (k === base || (k.startsWith(base + " #") && /^ #\d+$/.test(k.slice(base.length)))) && (MY[k] || "").trim(),
+      );
+      if (old.length !== 1) continue;
+      mySet(sk, MY[old[0]]);
+      mySet(old[0], "");
+    }
+  }
 }
 const myFill = () => {
   $qa("details.mine").forEach(fillMine);
@@ -168,20 +227,24 @@ async function myLoad() {
     return false;
   }
   myBusy = true;
+  let odd = false;
   try {
     const r = await FS.read(MYPATH);
     if (r === false) {
       myRetry();
       return false;
     }
-    const changed = myMerge(r ? myFromMd(r.text) : {}, !!r);
+    const disk = r ? myFromMd(r.text) : {};
+    odd = !!r && myOdd(r.text, disk);
+    const changed = myMerge(disk, !!r && !odd);
     myLoaded = true;
     myKeep();
     if (changed) myFill();
+    myMigrate();
   } finally {
     myBusy = false;
   }
-  if (myDirty.size || myAgain) {
+  if (myDirty.size || myAgain || odd) {
     myAgain = false;
     myWrite();
   }
@@ -203,13 +266,15 @@ async function myWrite() {
       return false;
     }
     const onDisk = r ? myFromMd(r.text) : {};
-    const changed = myMerge(onDisk, !!r);
+    const odd = !!r && myOdd(r.text, onDisk);
+    if (odd) await myBackupOdd(r.text);
+    const changed = myMerge(onDisk, !!r && !odd);
     myLoaded = true;
     const sent = new Map(myDirty),
       vals = { ...MY };
     const text = myToMd();
     /* write only when this browser has something the file lacks: an edit, or an answer only kept here */
-    const needed = sent.size > 0 || Object.entries(MY).some(([k, v]) => v && v.trim() && onDisk[k] !== v);
+    const needed = odd || sent.size > 0 || Object.entries(MY).some(([k, v]) => v && v.trim() && onDisk[k] !== v);
     if (needed && (!r || r.text !== text)) await FS.write(MYPATH, text);
     mySeen = new Set(Object.keys(vals).filter((k) => vals[k] && vals[k].trim()));
     /* edits typed while the write ran stay marked and are written next time */

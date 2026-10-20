@@ -29,7 +29,8 @@ function renderLibrary(v) {
             )
             .join(""),
       )
-      .join("");
+      .join("") +
+    `<div class="hlclear"><button type="button" class="linkbtn">Clear all my answers…</button></div>`;
   const read = document.createElement("article");
   read.className = "hlread";
   const toc = document.createElement("aside");
@@ -51,6 +52,29 @@ function renderLibrary(v) {
       if (t) setTimeout(() => t.scrollIntoView({ block: "start" }), 0);
     } else window.scrollTo(0, 0);
   }
+  /* Clear all my answers: the one way to empty My_answers.md on purpose (a file that loses every answer at once is
+     treated as a bad read and written again, see myOdd). Asks first; the toast can undo it. */
+  const clearBox = $q(".hlclear", nav);
+  const clearIdle = () => {
+    clearBox.innerHTML = `<button type="button" class="linkbtn">Clear all my answers…</button>`;
+  };
+  clearBox.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const all = Object.entries(MY).filter(([, v]) => v && v.trim());
+    if (b.classList.contains("hl-yes")) {
+      for (const [k] of all) mySet(k, "");
+      myFill();
+      clearIdle();
+      showToast(`Cleared ${all.length} answer${all.length === 1 ? "" : "s"} from My_answers.md.`, () => {
+        for (const [k, v] of all) mySet(k, v);
+        myFill();
+      });
+    } else if (b.classList.contains("hl-no")) clearIdle();
+    else if (!all.length) showToast("You have no saved answers to clear.");
+    else
+      clearBox.innerHTML = `<span>Remove all ${all.length} of your answers (guides and prep sheets) from My_answers.md?</span> <button type="button" class="btn small hl-yes">Clear all</button> <button type="button" class="btn small hl-no">Cancel</button>`;
+  });
   nav.addEventListener("click", (e) => {
     const a = e.target.closest("a[data-doc]");
     if (a) {

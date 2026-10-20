@@ -207,13 +207,13 @@ const ASKBOX = (k, alt) =>
   `<details class="mine ask" data-k="${esc(k)}"${ALT(alt)} data-label="Their answer" open><summary>Their answer</summary><textarea rows="3" placeholder="Type what they said. It saves to Library › My_answers.md."></textarea></details>`;
 /* opts.mineKey turns on the answer boxes (saved as "<mineKey>::<question>"); opts.ask turns {.ask} questions into
    "Their answer" boxes (prep sheets only: in a guide the marker is just dropped).
-   A question that is in the doc more than once (a prep sheet that asks it in every round) gets a box per copy, keyed by
-   its "## " section: "<mineKey>::<question> @<section>" (a second copy in the same section adds " #2"). So removing,
-   adding or reordering the other copies never moves an answer to another round. An answer saved under the plain key
-   before the question was repeated shows in the first copy and moves to that copy's key when the sheet is shown
-   (see fillMine). A question
-   that is on the doc once uses the plain key, or its section key when it has an answer saved under one (the other
-   copies were removed). The keys of every box are returned in `keys`. */
+   On a prep sheet (opts.ask) every box is keyed by its "## " section: "<mineKey>::<question> @<section>" (a second copy
+   in the same section adds " #2"), so adding, removing or reordering rounds never moves an answer to another round.
+   Answers saved under older keys move to these keys only when that is certain (see myMigrate); the rest show under
+   "Saved answers from earlier versions".
+   In a guide, a question that is there once uses the plain key; one that is there more than once gets a section key
+   per copy, and an answer saved under the plain key before the question was repeated shows in the first copy and moves
+   to that copy's key when the guide is shown (see fillMine). The keys of every box are returned in `keys`. */
 function renderDoc(md, prefix, opts) {
   opts = opts || {};
   const d = parse(md, opts);
@@ -240,6 +240,7 @@ function renderDoc(md, prefix, opts) {
     const sk = base + " @" + normK(sec) + (m > 1 ? " #" + m : "");
     /* older keys: the plain one (first copy), or " #n" by position (a development version used those) */
     const old = nth[base] === 1 ? base : base + " #" + nth[base];
+    if (opts.ask) return { k: sk, alt: null };
     if (total[base] > 1) return { k: sk, alt: !filled(sk) && filled(old) ? old : null };
     return { k: filled(sk) ? sk : base, alt: null };
   };

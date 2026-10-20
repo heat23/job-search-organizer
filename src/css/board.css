@@ -800,6 +800,13 @@ textarea {
 .status.bad .sdot {
   background: var(--danger);
 }
+.status .snote {
+  color: var(--ink);
+}
+.status .snote::before {
+  content: "· ";
+  color: var(--muted);
+}
 .quick {
   margin-left: auto;
   font-size: 12px;
@@ -1113,4 +1120,35 @@ details.waiting .wrow .why {
 .viewonly .addrow,
 .viewonly .item .acts button {
   display: none !important;
+}
+
+/* Restore a backup… */
+.drawer.restore .rlist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+.drawer.restore .rrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.drawer.restore .rrow small {
+  display: block;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.drawer.restore .racts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
 }

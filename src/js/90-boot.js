@@ -49,11 +49,14 @@ $("#backupBtn").addEventListener("click", () => {
     a.remove();
   }, 1000);
 });
+$("#restoreBtn").addEventListener("click", openRestore);
 $("#backupNotesBtn").addEventListener("click", () => backupNow(true));
 $("#secondBackupBtn").addEventListener("click", pickSecond);
 if (CONFIG.blurPay) document.body.classList.add("blurpay");
 
 render();
+/* this browser's copy, merged with the file, is kept at once (another open tab takes it from there) */
+persistLocal();
 if (!fileCopy && !localCopy && !FS_OK)
   showToast(`Couldn't find ${DATA_FILE} next to this page. Keep both files in the same folder.`);
 (async () => {
@@ -167,21 +170,28 @@ window.addEventListener("focus", () => {
   focusRun = onFocus();
 });
 /* Keep two open copies of the page in step. An open panel shows the other tab's change like a change from the folder.
-   The other tab's records merge field by field, like the file's: against the older of the two tabs' bases (the version
-   both copies came from), so a tab that loaded an older file doesn't undo what this tab took from a newer one. */
+   The other tab's records merge field by field: the field this browser changed last wins (see mergeTab), so every tab
+   settles on the latest change. The values the other tab saw in the file are added to this tab's history. */
 function mergeOtherTab(raw) {
   const theirs = normalize(raw);
-  const ob = raw && raw._bases && typeof raw._bases === "object" ? raw._bases : {};
-  const next = merge(store, emptyStore());
+  const tf = raw && raw._ft && typeof raw._ft === "object" ? raw._ft : {};
+  const next = copyStore(store);
   for (const c of COLLS)
     for (const id of Object.keys(theirs[c])) {
       const k = c + ":" + id;
-      let base = baseFrom(ob[k], c, id, theirs[c][id]);
-      const mine = fileRecs[k];
-      if (mine && (!base || ts(mine) < ts(base))) base = mine;
-      next[c][id] = merge3(next[c][id], theirs[c][id], base);
+      next[c][id] = mergeTab(k, next[c][id], theirs[c][id], timesIn(tf[k]));
     }
   store = next;
+  for (const [k, H] of histIn(raw && raw._hist, theirs)) {
+    const had = hist.get(k);
+    if (!had) hist.set(k, H);
+    else {
+      const mine = { ...had };
+      for (const [u, l] of Object.entries(H))
+        mine[u] = [...seenOf(had, u), ...l.filter((x) => !seenOf(had, u).includes(x))].slice(0, HMAX);
+      hist.set(k, mine);
+    }
+  }
 }
 window.addEventListener("storage", (e) => {
   if (e.key !== lsKey("board") || !e.newValue) return;
@@ -190,6 +200,7 @@ window.addEventListener("storage", (e) => {
     const recBefore = openRef ? JSON.stringify(get(openRef.sec, openRef.id) || null) : "";
     mergeOtherTab(JSON.parse(e.newValue));
     if (collectionsOnly(store) !== before) {
+      persistLocal();
       if (canWrite) {
         gen++;
         dirty = true;

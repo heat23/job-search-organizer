@@ -128,10 +128,15 @@ const REPORT = 'details.mine.ask[data-k^="prep:lumenfield::Who would I report to
         });
         await wait(p, 900);
         ok("M1 (saving is paused)", (await p.evaluate(() => canWrite)) === false);
+        /* (the file as it was before the pause: the sheet's older answer key was moved to its section key) */
+        const beforePause = await answers(p);
         await p.click(NEXT);
         await p.keyboard.type("Paused answer");
         await wait(p, 1800);
-        ok("M1 with saving paused the file isn't written", (await answers(p)) === MD);
+        ok(
+          "M1 with saving paused the file isn't written",
+          (await answers(p)) === beforePause && beforePause.includes("Old note."),
+        );
         ok(
           "M1 the answer is kept in the browser",
           /Paused answer/.test(await p.evaluate(() => localStorage.getItem(lsKey("myAnswers")))),

@@ -153,12 +153,14 @@ const Q90 = "What does success look like in 90 days?";
       ok("R2 no errors", !p.errs.length, p.errs.join("|"));
       await ctx.close();
     }
-    // ---- R3: bases are kept across a reload, also for records that were in sync
+    // ---- R3: the merge history is kept across a reload, also for records that were in sync
     if (want("R3")) {
       for (const [label, stampFn, keep] of [
         ["kept the old updatedAt", (old) => old, true],
         ["a newer updatedAt", () => new Date(Date.now() + 5000).toISOString(), true],
-        ["an updatedAt older than your last save (a stale copy)", () => "2020-01-01T00:00:00.000Z", false],
+        /* the merge goes by content, not by time: a new value is an edit whatever its updatedAt (this check expected the
+           old timestamp rule, "ignored", before the content-based merge) */
+        ["an updatedAt older than your last save", () => "2020-01-01T00:00:00.000Z", true],
       ]) {
         const ctx = await b.newContext();
         const p1 = await mkpage(ctx, { connect: true });
@@ -193,12 +195,12 @@ const Q90 = "What does success look like in 90 days?";
         }
         await ctx.close();
       }
-      /* browser storage full: the copy is kept without its bases, nothing breaks */
+      /* browser storage full: the copy is kept without its merge history (this was "bases"), nothing breaks */
       const ctx = await b.newContext();
       const p = await mkpage(ctx, {
         connect: true,
         init: `(() => { const set = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) {
-          if (window.__full && String(v).includes('"_bases"')) throw new DOMException("full", "QuotaExceededError");
+          if (window.__full && String(v).includes('"_hist"')) throw new DOMException("full", "QuotaExceededError");
           return set.call(this, k, v); }; })();`,
       });
       await wait(p, 1500);
@@ -207,9 +209,9 @@ const Q90 = "What does success look like in 90 days?";
       await wait(p, 1200);
       const ls = await p.evaluate(() => JSON.parse(localStorage.getItem(lsKey("board"))));
       ok(
-        "R3 with browser storage full, the copy is kept without bases and saving goes on",
+        "R3 with browser storage full, the copy is kept without its merge history and saving goes on",
         ls.jobs.harborlight.notes === "Storage is full" &&
-          !ls._bases &&
+          !ls._hist &&
           (await p.evaluate(() => localOk)) === true &&
           (await disk(p)).jobs.harborlight.notes === "Storage is full",
       );
@@ -331,7 +333,8 @@ const Q90 = "What does success look like in 90 days?";
       await close();
       ok("R5 no errors", !p.errs.length, p.errs.join("|"));
       await ctx.close();
-      /* an answer saved before the question was repeated stays with the first copy and moves to its key */
+      /* an answer saved under the plain key before the question was repeated can't be placed in one round for sure, so
+         it stays under "Saved answers from earlier versions" (this check expected it to move into the first copy) */
       const ctx2 = await b.newContext({ viewport: { width: 1440, height: 900 } });
       const MD = `# My answers\nx\n\n## prep:lumenfield::${Q90}\nAnswered before the panel round was added\n`;
       const p2 = await mkpage(ctx2, {
@@ -343,12 +346,13 @@ const Q90 = "What does success look like in 90 days?";
       await wait(p2, 2500);
       const vals = await p2.$$eval("#drawerRoot details.mine.ask textarea", (t) => t.map((x) => x.value));
       const md2 = await answers(p2);
+      const earlier2 = await p2.$$eval("#p-earlier .hq.earlier", (d) => d.map((x) => x.dataset.ek));
       ok(
-        "R5 an answer under the plain key shows in the first copy and is saved under its section",
-        vals[0] === "Answered before the panel round was added" &&
+        "R5 an answer under the plain key of a repeated question isn't guessed into a round (it is under earlier versions)",
+        vals[0] === "" &&
           vals[1] === "" &&
-          md2.includes(`## prep:lumenfield::${Q90} @Hiring manager round\nAnswered before`) &&
-          !md2.includes(`## prep:lumenfield::${Q90}\n`),
+          JSON.stringify(earlier2) === JSON.stringify([`prep:lumenfield::${Q90}`]) &&
+          md2.includes(`## prep:lumenfield::${Q90}\nAnswered before`),
         JSON.stringify(vals) + " " + md2.replace(/\n/g, "\\n").slice(-200),
       );
       ok("R5 plain key no errors", !p2.errs.length, p2.errs.join("|"));

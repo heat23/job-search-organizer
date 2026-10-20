@@ -19,6 +19,9 @@ const openJob = async (p, id) => {
 const sheetOpen = (p) => p.evaluate(() => !!document.querySelector("#drawerRoot .drawer.prep"));
 const ASK1 = "Who would I report to, and how big is the team?";
 const MINE1 = "Why are you looking to leave your current team?";
+/* prep-sheet answers are keyed by question and ## section */
+const K_ASK = `prep:${JOB}::${ASK1} @Questions to ask them`,
+  K_MINE = `prep:${JOB}::${MINE1} @Likely questions`;
 
 (async () => {
   let b;
@@ -69,22 +72,22 @@ const MINE1 = "Why are you looking to leave your current team?";
       await wait(p, 1600);
       let md = (await p.evaluate(() => window.__get("Library/My_answers.md"))) || "";
       ok(
-        "A typing in Their answer saves to My_answers.md under prep:<job>::<question>",
-        md.includes(`## prep:${JOB}::${ASK1}\nTeam of six, reports to the payments director.`),
+        "A typing in Their answer saves to My_answers.md under prep:<job>::<question> @<section>",
+        md.includes(`## ${K_ASK}\nTeam of six, reports to the payments director.`),
         md.slice(0, 200),
       );
       ok(
         "A the box shows a check once answered",
         (await p.$eval("#drawerRoot details.mine.ask > summary", (s) => s.textContent)) === "Their answer ✓",
       );
-      const box = p.locator(`#drawerRoot .pleft details.mine[data-k="prep:${JOB}::${MINE1}"]`);
+      const box = p.locator(`#drawerRoot .pleft details.mine[data-k="${K_MINE}"]`);
       await box.locator("summary").click();
       await box.locator("textarea").fill("My team's roadmap moved away from payments.");
       await wait(p, 1600);
       md = (await p.evaluate(() => window.__get("Library/My_answers.md"))) || "";
       ok(
         "A typing in My version saves under the job key too",
-        md.includes(`## prep:${JOB}::${MINE1}\nMy team's roadmap moved away from payments.`) &&
+        md.includes(`## ${K_MINE}\nMy team's roadmap moved away from payments.`) &&
           (await box.locator("summary").textContent()) === "My version ✓",
         md.slice(0, 300),
       );
@@ -156,7 +159,7 @@ const MINE1 = "Why are you looking to leave your current team?";
         "A a fresh browser fills the boxes from Library/My_answers.md",
         (await p2.$eval("#drawerRoot details.mine.ask textarea", (t) => t.value)) ===
           "Team of six, reports to the payments director." &&
-          (await p2.$eval(`#drawerRoot .pleft details.mine[data-k="prep:${JOB}::${MINE1}"]`, (d) => d.open)),
+          (await p2.$eval(`#drawerRoot .pleft details.mine[data-k="${K_MINE}"]`, (d) => d.open)),
       );
       // the renderer: {.ask} wins over ✎ on a sheet; a guide just drops the marker
       const r = await p2.evaluate(() => {
@@ -452,8 +455,7 @@ const MINE1 = "Why are you looking to leave your current team?";
       const md = (await p.evaluate(() => window.__get("Library/My_answers.md"))) || "";
       ok(
         "J a line starting with ## is written escaped",
-        md.includes(`## prep:${JOB}::${ASK1}\nFirst line\n\\## Heading inside\nLast line`) &&
-          !/^## Heading inside$/m.test(md),
+        md.includes(`## ${K_ASK}\nFirst line\n\\## Heading inside\nLast line`) && !/^## Heading inside$/m.test(md),
         md.slice(0, 300),
       );
       ok(

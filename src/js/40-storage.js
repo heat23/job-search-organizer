@@ -15,21 +15,36 @@ let dirHandle = null,
   saveErr = "",
   dirty = false,
   writing = false;
-let localOk = true;
-/* This browser's copy is kept together with the base of every record (what the data file held at the last read or
-   write), in one entry so another tab always gets a matching pair. When browser storage is full the copy is kept
-   without its bases (after a reload such records then merge by the newer updatedAt, as before). */
-let lastLocal = "";
+let localOk = true,
+  myLocalOk = true;
+/* This browser's copy is kept together with the merge history (see hist in store.js), in one entry so another tab always
+   gets a matching pair. When browser storage is full the copy is kept without its history (after a reload, records then
+   merge by the newer updatedAt until there is room again), and the status line says so once. */
+let lastLocal = "",
+  statusNote = "",
+  histNoted = false;
+function setNote(msg) {
+  statusNote = msg;
+  statusSig = "";
+  renderStatus();
+}
 function persistLocal() {
   let text;
   try {
-    text = JSON.stringify({ ...store, _bases: basesOf(store) });
+    text = JSON.stringify({ ...store, _hist: histOut(store), _ft: ftimeOut() });
   } catch (e) {
     text = JSON.stringify(store);
   }
   if (text === lastLocal) return localOk;
-  localOk = lsSet("board", text) || lsSet("board", JSON.stringify(store));
+  let full = lsSet("board", text);
+  localOk = full || lsSet("board", JSON.stringify(store));
   if (localOk) lastLocal = text;
+  if (localOk && !full && !histNoted) {
+    histNoted = true;
+    setNote(
+      "Browser storage is full, so this page kept your board without its merge history: until there is room, the newer copy of a changed card wins.",
+    );
+  }
   return localOk;
 }
 let gen = 0;
@@ -42,39 +57,74 @@ function persist() {
   if (!canWrite) renderBanner();
   renderStatus();
 }
-let lastRaw = "";
+let lastRaw = "",
+  lastMeta = "",
+  syncedText = "";
+const metaOf = (f) => f.lastModified + ":" + f.size;
 async function readFileInto() {
   if (!dirHandle) return "none";
   let t;
   lastRaw = "";
+  lastMeta = "";
   try {
     const fh = await dirHandle.getFileHandle(DATA_FILE);
-    t = await (await fh.getFile()).text();
+    const f = await fh.getFile();
+    lastMeta = metaOf(f);
+    t = await f.text();
   } catch (e) {
     return "missing";
   }
   lastRaw = t;
   if (!t.trim()) return "missing";
+  /* the same text as at the last read or write: nothing to merge */
+  if (t === syncedText) return "ok";
+  const stale = new Set();
   try {
     const raw = parseDataText(t);
     extras = Object.create(null);
     keepExtras(raw);
     const n = normalize(raw);
-    const next = merge(store, emptyStore());
+    const next = copyStore(store);
     for (const c of COLLS)
       for (const id of Object.keys(n[c])) {
-        const k = c + ":" + id;
-        fileBase[k] = Math.max(fileBase[k] || 0, ts(n[c][id]));
-        next[c][id] = merge3(next[c][id], n[c][id], fileRecs[k]);
-        fileRecs[k] = n[c][id];
+        const k = c + ":" + id,
+          r = n[c][id];
+        /* unchanged since the last read or write: nothing to merge */
+        if (fileRecs[k] && sameRec(fileRecs[k], r)) continue;
+        next[c][id] = mergeFile(k, next[c][id], r, stale);
+        rememberFile(k, r);
+        fileRecs[k] = r;
       }
     store = next;
     persistLocal();
     checkWrapper(t);
-    return "ok";
+    syncedText = t;
   } catch (e) {
     return "bad";
   }
+  if (stale.size) await keepOlder(t, stale.size);
+  return "ok";
+}
+/* The file held older values that this page kept your newer ones over (see mergeFile): the file as it was goes to
+   backups/ once a day, and the status line says so. */
+async function keepOlder(raw, n) {
+  if (dirHandle && canWrite)
+    try {
+      const bdir = await dirHandle.getDirectoryHandle("backups", { create: true });
+      const name = `${DATA_FILE.replace(/\.js$/, "")}_older_${TODAY()}.js`;
+      let exists = true;
+      try {
+        await bdir.getFileHandle(name);
+      } catch (e) {
+        exists = false;
+      }
+      if (!exists) {
+        const w = await (await bdir.getFileHandle(name, { create: true })).createWritable();
+        await w.write(raw);
+        await w.close();
+      }
+    } catch (e) {}
+  setNote(`Kept your newer changes to ${n} card${n === 1 ? "" : "s"}; the file's older copy is in backups/.`);
 }
 let wrapperWarned = "";
 function checkWrapper(t) {
@@ -105,14 +155,27 @@ async function writeFile() {
     } else {
       await dailyBackup(lastRaw);
       /* What is written is a copy taken now: an edit made while the file is being written is not in the file, so it
-         must not become the file's base (it would then look like a change the file undid). */
-      const snap = merge(store, emptyStore());
+         must not count as what the file holds. Right before writing, the file is checked again: when another tool
+         wrote it since the read, it is merged first (up to three times). */
+      let snap, w, fh;
+      for (let tries = 0; ; tries++) {
+        snap = copyStore(store);
+        fh = await dirHandle.getFileHandle(DATA_FILE, { create: true });
+        w = await fh.createWritable();
+        if (tries >= 3 || !lastMeta || metaOf(await fh.getFile()) === lastMeta) break;
+        try {
+          await w.abort();
+        } catch (e) {}
+        if ((await readFileInto()) === "bad") throw new Error("bad");
+      }
       const text = serialize(snap);
-      const fh = await dirHandle.getFileHandle(DATA_FILE, { create: true });
-      const w = await fh.createWritable();
       await w.write(text);
       await w.close();
-      setFileBase(snap);
+      syncedText = text;
+      lastMeta = metaOf(await fh.getFile());
+      for (const c of COLLS)
+        for (const id of Object.keys(snap[c]))
+          if (fileRecs[c + ":" + id] !== snap[c][id]) rememberFile(c + ":" + id, snap[c][id]);
       setFileRecs(snap);
       persistLocal();
       lastSaved = new Date();
@@ -135,7 +198,7 @@ async function writeFile() {
       await idbSet("dir", null);
       showToast("Couldn't find your board folder. It may have been moved. Click Turn on saving and pick it again.");
     } else {
-      saveErr = "write";
+      saveErr = e && e.message === "bad" ? "bad" : "write";
       if (e && e.name === "NotAllowedError") canWrite = false;
     }
   }
@@ -164,14 +227,21 @@ async function dailyBackup(rawBefore) {
       await w.close();
     }
     backedUpDay = day;
-    const re = new RegExp("^" + base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "_\\d{4}-\\d{2}-\\d{2}\\.js$");
-    const names = [];
-    for await (const [n, h] of bdir.entries()) if (h.kind === "file" && re.test(n)) names.push(n);
-    names.sort();
-    for (const n of names.slice(0, Math.max(0, names.length - CONFIG.backups.boardDays)))
-      try {
-        await bdir.removeEntry(n);
-      } catch (e) {}
+    /* the daily copies, the older copies kept by a merge and the copies saved before a restore: the newest few of each */
+    const esc = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const kinds = ["", "older_", "before_restore_"].map(
+      (k) => new RegExp("^" + esc + "_" + k + "\\d{4}-\\d{2}-\\d{2}[\\d_]*\\.js$"),
+    );
+    const names = kinds.map(() => []);
+    for await (const [n, h] of bdir.entries())
+      if (h.kind === "file") kinds.forEach((re, i) => re.test(n) && names[i].push(n));
+    for (const list of names) {
+      list.sort();
+      for (const n of list.slice(0, Math.max(0, list.length - CONFIG.backups.boardDays)))
+        try {
+          await bdir.removeEntry(n);
+        } catch (e) {}
+    }
   } catch (e) {}
 }
 
@@ -351,7 +421,7 @@ async function fileJobs(full) {
             }
           }
           const r = store.jobs[id];
-          store.jobs[id] = { ...r, folder: null, filesDeletedAt: nowIso(), updatedAt: stamp(r), changedBy: "you" };
+          setRec("jobs", id, { ...r, folder: null, filesDeletedAt: nowIso(), updatedAt: stamp(r), changedBy: "you" });
           filedSig.delete(id);
           persist();
         }
@@ -382,7 +452,7 @@ async function fileJobs(full) {
           continue;
         }
         const r = store.jobs[id];
-        store.jobs[id] = { ...r, folder: target, updatedAt: stamp(r), changedBy: "you" };
+        setRec("jobs", id, { ...r, folder: target, updatedAt: stamp(r), changedBy: "you" });
         filedSig.set(id, fileSig(store.jobs[id]));
         failWarned.delete(id);
         rescan.push(target);
@@ -514,16 +584,26 @@ function renderStatus() {
   const s = $("#status");
   if (!s) return;
   const bannerUp = !!$("#banner .banner");
-  const sig = [FS_OK, localOk, !!dirHandle, canWrite, saveErr, dirty, lastSaved && lastSaved.getTime(), bannerUp].join(
-    "|",
-  );
+  const sig = [
+    FS_OK,
+    localOk,
+    myLocalOk,
+    !!dirHandle,
+    canWrite,
+    saveErr,
+    dirty,
+    lastSaved && lastSaved.getTime(),
+    bannerUp,
+    statusNote,
+  ].join("|");
   if (sig === statusSig) return;
   statusSig = sig;
   s.textContent = "";
   s.className = "status";
   const dot = () => el("span", { class: "sdot" });
   if (!FS_OK) return;
-  if (!localOk && (!dirHandle || !canWrite)) {
+  const extra = () => (statusNote ? el("span", { class: "snote", text: statusNote }) : "");
+  if ((!localOk || !myLocalOk) && (!dirHandle || !canWrite)) {
     s.classList.add("bad");
     s.append(
       dot(),
@@ -544,6 +624,7 @@ function renderStatus() {
       dot(),
       "Not saved to your folder yet",
       el("button", { class: "btn small", type: "button", text: "Turn on saving", onclick: connectFolder }),
+      extra(),
     );
     return;
   }
@@ -554,6 +635,7 @@ function renderStatus() {
       dot(),
       "Saving to your folder is paused.",
       el("button", { class: "btn small", type: "button", text: "Resume saving", onclick: allowAgain }),
+      extra(),
     );
     return;
   }
@@ -561,7 +643,7 @@ function renderStatus() {
     s.classList.add("bad");
     s.append(
       dot(),
-      `${DATA_FILE} has an error, so it wasn't overwritten. Your changes are safe in this browser. Fix the file or copy one back from backups/.`,
+      `${DATA_FILE} has an error, so it wasn't overwritten. Your changes are safe in this browser. Fix the file, or use Restore a backup… at the bottom of the page.`,
       el("button", { class: "btn small", type: "button", text: "Try again", onclick: writeFile }),
     );
     return;
@@ -587,6 +669,7 @@ function renderStatus() {
       : lastSaved
         ? `Saved to your folder at ${lastSaved.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
         : "Saving to your folder",
+    extra(),
   );
 }
 

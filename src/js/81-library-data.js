@@ -152,6 +152,7 @@ async function scanPrep(opts) {
     }
   }
   prepScanned = true;
+  if (changed) myMigrate();
   if (!opts.quiet && (changed || Object.keys(PREPTXT).length === 0)) {
     try {
       render();

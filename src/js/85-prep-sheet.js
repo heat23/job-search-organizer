@@ -85,7 +85,7 @@ function earlierHtml(id, keys) {
   const list = earlierAnswers(id, keys);
   if (!list.length) return "";
   const pre = "prep:" + id + "::";
-  return `<section class="hs earlier" id="p-earlier" data-title="Saved answers from earlier versions"><details class="fold"><summary>Saved answers from earlier versions (${list.length})</summary><p class="muted">Answers you typed for questions that are no longer on this sheet (the question was reworded or removed). They stay in Library › My_answers.md until you remove them.</p>${list
+  return `<section class="hs earlier" id="p-earlier" data-title="Saved answers from earlier versions"><details class="fold"><summary>Saved answers from earlier versions (${list.length})</summary><p class="muted">Answers you typed for questions that are no longer on this sheet (the question or its round was reworded or removed), and older answers the page can't place in one round for sure. They stay in Library › My_answers.md until you remove them.</p>${list
     .map(
       ([k, v]) =>
         `<div class="hq earlier" data-ek="${esc(k)}"><h4><span>${esc(k.slice(pre.length))}</span></h4><blockquote class="say"><p>${esc(v.trim()).replace(/\n/g, "<br>")}</p></blockquote><div class="eacts"><button type="button" class="btn small erm">Remove</button></div></div>`,
@@ -220,6 +220,7 @@ function enhance(sec, d, id, x, keep) {
     let lh = "";
     nav = [];
     /* answer boxes: ✎ questions get "My version", {.ask} questions "Their answer" (Library › My_answers.md, "prep:<id>::…") */
+    if (isJob && validPrep(PREPTXT[id])) myMigrate();
     const dd =
       isJob && validPrep(PREPTXT[id])
         ? renderDoc(PREPTXT[id], "p-" + String(id).replace(/[^\w-]/g, "_"), { mineKey: "prep:" + id, ask: true })
