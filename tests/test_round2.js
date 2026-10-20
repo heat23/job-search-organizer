@@ -38,13 +38,19 @@ async function book(p, id, type) {
   await p.keyboard.press("Escape");
   await wait(p, 200);
 }
-/* an assistant edits one record in board_data.js on disk (newer updatedAt, changedBy assistant) */
+/* an assistant edits one record in board_data.js on disk (rev + 1, changedBy assistant) */
 async function assistantEdit(p, coll, id, patch) {
   await p.evaluate(
     ([c, i, pt]) => {
       return window.__get("board_data.js").then((t) => {
         const d = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
-        d[c][i] = { ...d[c][i], ...pt, updatedAt: new Date(Date.now() + 2000).toISOString(), changedBy: "assistant" };
+        d[c][i] = {
+          ...d[c][i],
+          ...pt,
+          rev: (d[c][i].rev || 0) + 1,
+          updatedAt: new Date(Date.now() + 2000).toISOString(),
+          changedBy: "assistant",
+        };
         window.__put("board_data.js", t.slice(0, t.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n");
       });
     },

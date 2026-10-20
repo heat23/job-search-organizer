@@ -17,32 +17,34 @@ let dirHandle = null,
   writing = false;
 let localOk = true,
   myLocalOk = true;
-/* This browser's copy is kept together with the merge history (see hist in store.js), in one entry so another tab always
-   gets a matching pair. When browser storage is full the copy is kept without its history (after a reload, records then
-   merge by the newer updatedAt until there is room again), and the status line says so once. */
+/* This browser's copy is kept together with the bases (see "merging" in store.js), in one entry so another tab always
+   gets a matching pair. When browser storage is full the copy is kept without its bases (they stay in memory for this
+   session; after a reload a card that differs keeps the copy with the higher rev), and the status line says so once.
+   force: write even when nothing changed since the last write (browser storage may have been cleared meanwhile). */
 let lastLocal = "",
   statusNote = "",
-  histNoted = false;
+  basesNoted = false;
 function setNote(msg) {
   statusNote = msg;
   statusSig = "";
   renderStatus();
 }
-function persistLocal() {
+function persistLocal(force) {
   let text;
   try {
-    text = JSON.stringify({ ...store, _hist: histOut(store), _ft: ftimeOut() });
+    text = JSON.stringify({ ...store, _base: basesOut(store) });
   } catch (e) {
     text = JSON.stringify(store);
   }
-  if (text === lastLocal) return localOk;
+  if (text === lastLocal && !(force && lsGet("board", "") !== text)) return localOk;
   let full = lsSet("board", text);
   localOk = full || lsSet("board", JSON.stringify(store));
-  if (localOk) lastLocal = text;
-  if (localOk && !full && !histNoted) {
-    histNoted = true;
+  lastLocal = full ? text : "";
+  if (localOk) tabBase = copyStore(store);
+  if (localOk && !full && !basesNoted) {
+    basesNoted = true;
     setNote(
-      "Browser storage is full, so this page kept your board without its merge history: until there is room, the newer copy of a changed card wins.",
+      "Browser storage is full, so this page keeps its record of what the file held in memory for now. Saving goes on; after a reload, a card that differs from the file keeps the copy with the higher revision.",
     );
   }
   return localOk;
@@ -78,53 +80,84 @@ async function readFileInto() {
   if (!t.trim()) return "missing";
   /* the same text as at the last read or write: nothing to merge */
   if (t === syncedText) return "ok";
-  const stale = new Set();
+  const rec = { kept: new Set(), took: new Set() };
+  const before = store;
   try {
     const raw = parseDataText(t);
     extras = Object.create(null);
     keepExtras(raw);
-    const n = normalize(raw);
-    const next = copyStore(store);
-    for (const c of COLLS)
-      for (const id of Object.keys(n[c])) {
-        const k = c + ":" + id,
-          r = n[c][id];
-        /* unchanged since the last read or write: nothing to merge */
-        if (fileRecs[k] && sameRec(fileRecs[k], r)) continue;
-        next[c][id] = mergeFile(k, next[c][id], r, stale);
-        rememberFile(k, r);
-        fileRecs[k] = r;
-      }
-    store = next;
+    store = mergeIn(store, normalize(raw), rec);
     persistLocal();
     checkWrapper(t);
     syncedText = t;
   } catch (e) {
     return "bad";
   }
-  if (stale.size) await keepOlder(t, stale.size);
+  if (pendingRecord) {
+    const pr = pendingRecord;
+    pendingRecord = null;
+    for (const k of pr.rec.kept) rec.kept.add(k);
+    for (const k of pr.rec.took) rec.took.add(k);
+    await recordMerge(rec, t, pr.browser);
+  } else await recordMerge(rec, t, before);
   return "ok";
 }
-/* The file held older values that this page kept your newer ones over (see mergeFile): the file as it was goes to
-   backups/ once a day, and the status line says so. */
-async function keepOlder(raw, n) {
-  if (dirHandle && canWrite)
+/* What a merge kept or took is recorded: the other side's version goes to backups/ (the last 10 of each kind are
+   kept) and the status line says so. Never a dialog: nothing is blocked. */
+const KEEP_BACKUPS = 10;
+const hhmm2 = () => new Date().toTimeString().slice(0, 5).replace(":", "");
+async function pruneBackups(bdir, re, keep) {
+  const names = [];
+  for await (const [n, h] of bdir.entries()) if (h.kind === "file" && re.test(n)) names.push(n);
+  names.sort();
+  for (const n of names.slice(0, Math.max(0, names.length - keep)))
     try {
-      const bdir = await dirHandle.getDirectoryHandle("backups", { create: true });
-      const name = `${DATA_FILE.replace(/\.js$/, "")}_older_${TODAY()}.js`;
-      let exists = true;
-      try {
-        await bdir.getFileHandle(name);
-      } catch (e) {
-        exists = false;
-      }
-      if (!exists) {
-        const w = await (await bdir.getFileHandle(name, { create: true })).createWritable();
-        await w.write(raw);
-        await w.close();
-      }
+      await bdir.removeEntry(n);
     } catch (e) {}
-  setNote(`Kept your newer changes to ${n} card${n === 1 ? "" : "s"}; the file's older copy is in backups/.`);
+}
+/* backups/board_data_<kind>_<date>_<HHMM>.js; returns its name, or "" when it couldn't be written */
+async function saveBackup(kind, text) {
+  if (!dirHandle || !canWrite || !text) return "";
+  try {
+    const bdir = await dirHandle.getDirectoryHandle("backups", { create: true });
+    const base = DATA_FILE.replace(/\.js$/, "");
+    let name = `${base}_${kind}_${TODAY()}_${hhmm2()}.js`;
+    try {
+      await bdir.getFileHandle(name);
+      name = name.replace(/\.js$/, new Date().toTimeString().slice(6, 8) + ".js");
+    } catch (e) {}
+    const w = await (await bdir.getFileHandle(name, { create: true })).createWritable();
+    await w.write(text);
+    await w.close();
+    const esc = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    await pruneBackups(bdir, new RegExp("^" + esc + "_" + kind + "_\\d{4}-\\d{2}-\\d{2}_\\d{4,6}\\.js$"), KEEP_BACKUPS);
+    return name;
+  } catch (e) {
+    return "";
+  }
+}
+const cards = (n) => `${n} card${n === 1 ? "" : "s"}`;
+async function recordMerge(rec, fileText, browserStore) {
+  const msg = [];
+  if (rec.kept.size) {
+    const name = await saveBackup("kept", fileText);
+    msg.push(
+      `Kept your version of ${cards(rec.kept.size)}; ` +
+        (name
+          ? `the file's version is saved in backups/${name}.`
+          : "the file's version wasn't saved (no folder access)."),
+    );
+  }
+  if (rec.took.size) {
+    const name = await saveBackup("browser", serialize(browserStore));
+    msg.push(
+      `Took the file's version of ${cards(rec.took.size)}; ` +
+        (name
+          ? `this browser's version is saved in backups/${name}.`
+          : "this browser's version wasn't saved (no folder access)."),
+    );
+  }
+  if (msg.length) setNote(msg.join(" "));
 }
 let wrapperWarned = "";
 function checkWrapper(t) {
@@ -160,6 +193,7 @@ async function writeFile() {
       let snap, w, fh;
       for (let tries = 0; ; tries++) {
         snap = copyStore(store);
+        revsForWrite(snap);
         fh = await dirHandle.getFileHandle(DATA_FILE, { create: true });
         w = await fh.createWritable();
         if (tries >= 3 || !lastMeta || metaOf(await fh.getFile()) === lastMeta) break;
@@ -173,10 +207,7 @@ async function writeFile() {
       await w.close();
       syncedText = text;
       lastMeta = metaOf(await fh.getFile());
-      for (const c of COLLS)
-        for (const id of Object.keys(snap[c]))
-          if (fileRecs[c + ":" + id] !== snap[c][id]) rememberFile(c + ":" + id, snap[c][id]);
-      setFileRecs(snap);
+      setBases(snap);
       persistLocal();
       lastSaved = new Date();
       saveErr = "";
@@ -227,9 +258,9 @@ async function dailyBackup(rawBefore) {
       await w.close();
     }
     backedUpDay = day;
-    /* the daily copies, the older copies kept by a merge and the copies saved before a restore: the newest few of each */
+    /* the daily copies and the copies saved before a restore: the newest few of each */
     const esc = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const kinds = ["", "older_", "before_restore_"].map(
+    const kinds = ["", "before_restore_"].map(
       (k) => new RegExp("^" + esc + "_" + k + "\\d{4}-\\d{2}-\\d{2}[\\d_]*\\.js$"),
     );
     const names = kinds.map(() => []);
@@ -407,8 +438,9 @@ async function fileJobs(full) {
       const want = x.deleted ? REMOVED_DIR : STAGE_DIR[laneKey("jobs", x)];
       if (!want) continue;
       const { stage, name } = splitFolder(x.folder);
-      /* A removed card's files wait in the removed folder (Restore brings them back), then are deleted for good. */
-      if (removedWaiting) {
+      /* A removed card's files wait in the removed folder (Restore brings them back), then are deleted for good. (On a
+         full pass, a folder that isn't there is first looked for under the stage folders, below.) */
+      if (removedWaiting && !(all && !(await hasDir(x.folder)))) {
         if (!purge) continue;
         const since = Date.parse(x.removedAt || x.updatedAt || "");
         if (since && Date.now() - since > PURGE_DAYS * 864e5) {
@@ -420,16 +452,21 @@ async function fileJobs(full) {
               continue;
             }
           }
-          const r = store.jobs[id];
-          setRec("jobs", id, { ...r, folder: null, filesDeletedAt: nowIso(), updatedAt: stamp(r), changedBy: "you" });
+          setRec("jobs", id, edited(store.jobs[id], { folder: null, filesDeletedAt: nowIso() }));
           filedSig.delete(id);
           persist();
         }
         continue;
       }
+      /* A full pass also checks that the folder is there: after Restore a backup… a record can name a stage folder its
+         folder isn't in. It is then looked for under the other stage folders by name and moved back. */
+      let verify = false;
       if (stage === want) {
-        failWarned.delete(id);
-        continue;
+        if (!all || (await hasDir(x.folder))) {
+          failWarned.delete(id);
+          continue;
+        }
+        verify = true;
       }
       const target = want + "/" + name;
       try {
@@ -448,15 +485,17 @@ async function fileJobs(full) {
           await moveDir(from, target);
           moved.push(x.company || name);
         } else if (!there) {
-          fail(id, x, name);
+          /* not found anywhere: the card says its files are missing */
+          if (!verify) fail(id, x, name);
           continue;
         }
-        const r = store.jobs[id];
-        setRec("jobs", id, { ...r, folder: target, updatedAt: stamp(r), changedBy: "you" });
+        if (store.jobs[id].folder !== target) {
+          setRec("jobs", id, edited(store.jobs[id], { folder: target }));
+          persist();
+        }
         filedSig.set(id, fileSig(store.jobs[id]));
         failWarned.delete(id);
         rescan.push(target);
-        persist();
       } catch (e) {
         fail(id, x, name);
       }

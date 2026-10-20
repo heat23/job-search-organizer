@@ -5,18 +5,21 @@ This folder is a job search board. The person keeps it up to date by asking you,
 ## Ground rules
 
 1. **Edit `board_data.js` in place.** Keep the first comment lines and the `window.BOARD_DATA = { ... };` wrapper. What's inside must stay valid JSON. The page loads this file (and `organizer.config.js`) as a script, so change only the JSON object: never add code, other statements or anything outside the wrapper. The page warns the person when the file holds anything else.
-2. **Read the file right before you write it, and stamp every record you add or change** with `"updatedAt"` (the current time, ISO 8601 in UTC with a `Z`, later than the record's old value) and `"changedBy": "assistant"`. Change only the records and fields you mean to. The page merges field by field. A record whose `updatedAt` is newer than any it has seen is your edit: every field you changed is taken, also a value the field had before (a card moved back, a card restored, a star taken off and put back). If you don't bump `updatedAt`, the values decide: a value the field never had is taken, but one it had recently counts as an older copy written back, and the person's value is kept (the file you wrote goes to `backups/`). So always bump it, and never write back a copy you read earlier. If you and the person changed the same field, the later change wins (an `updatedAt` in the future is read as now).
-3. **Never delete a record.** To remove one, set `"deleted": true`, `"removedAt"` (the current time) and a new `updatedAt`.
+2. **Bump `rev` on every record you add or change: `"rev": <its old rev> + 1`** (a new record gets `"rev": 1`; a record without `rev` counts as `0`, so it gets `1`). This is how the page knows your change is new. A change without a higher `rev` is **not applied**: the page keeps the person's version, saves your file to `backups/` and tells them. Also set `"updatedAt"` (now, ISO 8601 in UTC with a `Z`) and `"changedBy": "assistant"`; they're only shown (the **New from assistant** tag), never used to decide anything.
+   - **Read the file right before you write it**, and write back only what you read then plus your change. Change only the records and fields you mean to, and bump `rev` only on those.
+   - The page merges field by field. If the person changed a field you also changed since your read, the person's value is kept and your file is saved to `backups/`. A copy you read earlier and write back later carries old `rev`s, so it changes nothing.
+   - Example: you read `"harborlight": { "lane": "applied", "rev": 4, … }` and move it to the screen: write `"lane": "screen"`, `"movedAt"`, `"followUp"`, `"rev": 5`, `"updatedAt"`, `"changedBy": "assistant"`.
+3. **Never delete a record.** To remove one, set `"deleted": true`, `"removedAt"` (the current time) and `"rev": n+1`. A record missing from the file is put back by the page.
 4. **Keep the fields you don't know about.** Change only what the request needs.
 5. **Read but never edit** `my_notes*.md` and `Library/My_answers.md` (the person's own notes). Don't touch `backups/` or `organizer.html`, and don't move or rename the job folders under `1 - To apply/`, `2 - Applied/` and so on: the page files them by stage on its own. You may add files to a job's folder when asked, such as a tailored résumé.
-6. **Never "restore" by copying an old file** from `backups/` (or anywhere) over `board_data.js` or `Library/My_answers.md`: the page reads that as an older copy and keeps the newer values. When the person wants an earlier version back, tell them to click **Restore a backup…** at the bottom of the page (it saves the current file first and has an Undo). To remove all their answers, they use **Clear all my answers…** in the Prep library.
+6. **Never "restore" by copying an old file** from `backups/` (or anywhere) over `board_data.js` or `Library/My_answers.md`: an old copy has old `rev`s, so the page keeps the current values (and an answer missing from `My_answers.md` is written back). When the person wants an earlier version back, tell them to click **Restore a backup…** at the bottom of the page (it saves the current file first and has an Undo). To remove all their answers, they use **Clear all my answers…** in the Prep library.
 7. **Ask before guessing** a company, date or result. Say which records you changed when you're done.
 
 ## `board_data.js`
 
 Five collections, each an object of records keyed by id. Use a short, unique, lowercase id with letters, digits and `_` (for example `acme` or `acme_platform`).
 
-Dates: `followUp` and `keepUntil` are local dates `YYYY-MM-DD`. `callAt` is a local time `YYYY-MM-DDTHH:MM`. Other times (`createdAt`, `movedAt`, `appliedAt`, `updatedAt`) are ISO times in UTC with `Z`.
+Every record has `rev` (a whole number, see ground rule 2), `updatedAt` and `changedBy`. Dates: `followUp` and `keepUntil` are local dates `YYYY-MM-DD`. `callAt` is a local time `YYYY-MM-DDTHH:MM`. Other times (`createdAt`, `movedAt`, `appliedAt`, `updatedAt`) are ISO times in UTC with `Z`.
 
 ### `jobs`
 
@@ -64,12 +67,14 @@ The page's settings file, `organizer.config.js`, can rename the stages, change t
 
 ## Moving a card
 
-Set `lane` and `movedAt`, and a new `followUp` (today plus the stage's days) unless the person gave a date.
+Set `lane` and `movedAt`, and a new `followUp` (today plus the stage's days) unless the person gave a date, with `"rev": n+1` (n: the rev you read).
 
 - **Applied:** also set `appliedAt`, and `sentResume` if you know which version was sent.
 - **Call booked:** set `callAt`, `callType`, `callWith`, `callLink`, and set `followUp` to the day after the call. Move the job the way its call type's `moves` says: `screen` moves it from `applied` to `screen`, `interview` moves it from `applied` or `screen` to `interview`, `none` leaves it. With the default types, a recruiter call goes to `screen` and later rounds to `interview`.
 - **Closed:** set `closedReason` and clear `followUp` (`null`). A closed card's call is hidden (on the card, in Upcoming calls and in quick open) and no longer opens the prep sheet by itself, so clearing the call fields is optional.
 - **Offer:** `lane: "offer"`, with a short summary in `notes`.
+
+A new job: `"rev": 1`, `createdAt`, `company`, `role`, `url`, `lane: "todo"`, `updatedAt`, `changedBy: "assistant"`. Any other change to a record, such as `notes` or a to-do's `done`: the fields you change and `"rev": n+1`.
 
 ## A new job's résumé folder
 
@@ -77,7 +82,7 @@ When the person asks you to set up the documents for a job (for example a tailor
 
 1. Create `1 - To apply/<Company> - <Role>/` (no `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>` or `|` in the name, and no dot or space at the end, so it also works on Windows; use the `stageFolders.todo` name if `organizer.config.js` changes it), even if the job is already further along.
 2. Save the files there under the names in `organizer.config.js` (`files.resume` and `files.coverLetter`, default `Resume.pdf` and `Cover_Letter.pdf`), or set `resumeFile` / `letterFile` on the job. Set `noLetter: true` if there is no cover letter.
-3. Set the job's `folder` to that path, with a new `updatedAt`. The page moves the folder to the job's stage folder on its own, and its card says when a file it expects isn't in the folder.
+3. Set the job's `folder` to that path, with `"rev": n+1`. The page moves the folder to the job's stage folder on its own, and its card says when a file it expects isn't in the folder.
 
 ## Prep sheets and notes
 

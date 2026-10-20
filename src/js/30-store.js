@@ -1,8 +1,7 @@
 /* ================= the data store =================
    board_data.js holds five collections of records keyed by id. Two copies can exist (the file and this browser);
-   they merge field by field (see mergeFile below). Removed records keep deleted:true. */
+   they merge by each record's revision number `rev` (see "merging" below). Removed records keep deleted:true. */
 const emptyStore = () => Object.fromEntries(COLLS.map((c) => [c, Object.create(null)]));
-const ts = (r) => (r && Date.parse(r.updatedAt)) || 0;
 const STR = [
   "company",
   "role",
@@ -40,8 +39,12 @@ function clean(r) {
   if (o.followUp && !/^\d{4}-\d{2}-\d{2}$/.test(o.followUp)) o.followUp = isoToLocalDate(o.followUp) || null;
   if (o.keepUntil && !/^\d{4}-\d{2}-\d{2}$/.test(o.keepUntil)) o.keepUntil = null;
   if ((!o.lane || o.lane === "todo") && o.followUp) o.followUp = null;
+  /* the revision number: a whole number, 0 when missing (a record written before revisions existed) */
+  const n = typeof o.rev === "string" && /^\s*\d+\s*$/.test(o.rev) ? Number(o.rev) : o.rev;
+  o.rev = Number.isSafeInteger(n) && n > 0 ? n : 0;
   return o;
 }
+const revOf = (r) => (r && r.rev) || 0;
 /* A job's "folder" as the page keeps it: without a trailing "/", and with the stage folder spelled as in the settings
    ("1 - to apply/Acme" is the same folder as "1 - To apply/Acme" on macOS and Windows). */
 function canonFolder(f) {
@@ -59,19 +62,6 @@ function keepExtras(raw) {
   if (!raw || typeof raw !== "object") return;
   for (const k of Object.keys(raw)) if (!COLLS.includes(k) && k !== "version" && k !== "savedAt") extras[k] = raw[k];
 }
-/* An updatedAt more than 5 minutes ahead of this computer's clock (a typo, or local time written with Z) is read as now,
-   so it can never make later edits look older. */
-let capWarned = false;
-function capStamp(r) {
-  if (ts(r) <= Date.now() + 3e5) return r;
-  if (!capWarned) {
-    capWarned = true;
-    try {
-      console.warn(`A record's updatedAt (${r.updatedAt}) is in the future; it is read as now.`);
-    } catch (e) {}
-  }
-  return { ...r, updatedAt: nowIso() };
-}
 function normalize(src) {
   const out = emptyStore();
   if (!src || typeof src !== "object") return out;
@@ -82,27 +72,28 @@ function normalize(src) {
     for (const id of Object.keys(coll)) {
       const r = coll[id];
       if (r && typeof r === "object" && !Array.isArray(r))
-        out[c][id] = clean(capStamp(r.updatedAt ? r : { ...r, updatedAt: dflt }));
+        out[c][id] = clean(r.updatedAt ? r : { ...r, updatedAt: dflt });
     }
   }
   return out;
 }
-/* ---- merging ----
-   For every record the page keeps a short history (`hist`) of the values the data file held when the page read or
-   wrote it: per field, the last few values as short hashes (the first one is the last synced value), plus the highest
-   updatedAt it has seen for the record (`seenAt`), kept with this browser's copy. An updatedAt more than 5 minutes
-   ahead of this clock is read as now (see capStamp), so a wrong stamp can't block later edits. When the file's record
-   differs from this browser's, field by field (deleted and removedAt count as one field):
-   - the file's record has an updatedAt newer than any seen: another tool edited it. Every field it changed since the
-     last sync is taken, also a value the field had before (a card moved back, a card restored);
-   - otherwise (an older copy written back, or a tool that didn't stamp its edit) the values decide: a value the page
-     has seen before is an older copy, so yours stays and the next save writes it back; a value never seen is an edit
-     and is taken.
-   Where you changed the same field since the last sync, the later change wins (when you changed it, against the file
-   record's updatedAt). A record without a history (browser storage was full, or a copy from before this version) falls
-   back to: the record with the newer updatedAt wins.
-   Open tabs share one copy in browser storage and merge each other's copies field by field by the time this browser last
-   changed each field (`ftime`), so all tabs settle on the latest change. */
+/* ---- merging: revision counters ----
+   Every record has a whole number `rev` (missing: 0). Whoever changes a record (this page or another tool) sets rev to
+   the old rev + 1. updatedAt and changedBy are only shown (and drive the "New from assistant" tag), never compared.
+   For every record the page keeps its BASE (`bases`): the record exactly as the data file held it at the last
+   successful read or write, kept in browser storage next to this browser's copy (in memory only while storage is full).
+   The file's record F merges with this browser's record L like this:
+   - F.rev > base.rev: the file has a real new edit. Per field, whichever side changed it since the base wins; a field
+     both sides changed to different values keeps your value (a conflict, recorded). The result's rev is the higher of
+     the two, plus 1 when your changes still have to be written.
+   - F.rev <= base.rev while F differs from the base: an older copy written back, or an edit made without a new rev.
+     Every field keeps your value and is written back (recorded).
+   - no base: a record new on both sides keeps yours (recorded). Without any bases (a copy stored while browser storage
+     was full, or by a version before revisions), yours stays only when its rev is higher; otherwise the file's is
+     taken (this browser's copy is recorded).
+   - a record the file lost that has a base is kept (removing is deleted:true) and written back (recorded).
+   "Recorded" means the other side's version goes to backups/ and the status line says so (recordMerge in storage.js).
+   deleted and removedAt count as one field. Open tabs share the bases, and merge each other's copies (see mergeTab). */
 const canon = (v) =>
   JSON.stringify(v === undefined ? null : v, (k, x) =>
     x && typeof x === "object" && !Array.isArray(x)
@@ -115,23 +106,25 @@ const canon = (v) =>
   );
 const eqv = (a, b) => a === b || canon(a) === canon(b);
 function sameRec(a, b) {
-  if (!a || !b) return a === b;
+  if (a === b) return true;
+  if (!a || !b) return false;
   for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (!eqv(a[k], b[k])) return false;
   return true;
 }
-const SKIP = new Set(["updatedAt", "changedBy"]);
-/* the same fields, whatever the stamp (updatedAt, changedBy) */
+const META = new Set(["rev", "updatedAt", "changedBy"]);
+/* the same fields, whatever the revision and stamps */
 function sameContent(a, b) {
-  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (!SKIP.has(k) && !eqv(a[k], b[k])) return false;
+  if (a === b) return true;
+  if (!a || !b) return false;
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (!META.has(k) && !eqv(a[k], b[k])) return false;
   return true;
 }
-const isoAt = (ms) => new Date(ms).toISOString();
 /* A "unit" is a field, except that deleted and removedAt are one unit. */
 const unitOf = (f) => (f === "removedAt" ? "deleted" : f);
 const unitVal = (r, u) => (u === "deleted" ? [!!r.deleted, r.removedAt || null] : r[u]);
 function unitsOf(...recs) {
   const s = new Set();
-  for (const r of recs) if (r) for (const f of Object.keys(r)) if (!SKIP.has(f)) s.add(unitOf(f));
+  for (const r of recs) if (r) for (const f of Object.keys(r)) if (!META.has(f)) s.add(unitOf(f));
   return s;
 }
 const sameUnit = (a, b, u) => eqv(unitVal(a, u), unitVal(b, u));
@@ -140,171 +133,154 @@ function setUnit(out, src, u) {
     if (src[f] !== undefined) out[f] = src[f];
     else delete out[f];
 }
-/* A short hash of a unit's value (records are never changed in place, so it is cached per record). */
-function h32(s) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
-  return (h >>> 0).toString(36);
-}
-const hcache = new WeakMap();
-function vh(r, u) {
-  if (!r) return h32(canon(unitVal({}, u)));
-  let m = hcache.get(r);
-  if (!m) hcache.set(r, (m = Object.create(null)));
-  return m[u] || (m[u] = h32(canon(unitVal(r, u))));
-}
-/* hist: "c:id" -> {unit: [hashes, newest first]}; a unit missing from a known record was never set ([hash of nothing]).
-   ftime: "c:id" -> {unit: time this browser last changed it}. */
-const HMAX = 5;
-let hist = new Map(),
-  ftime = new Map(),
-  seenAt = new Map();
-const seenOf = (H, u) => H[u] || [vh(null, u)];
-/* The data file holds `rec` now (read from it, or written to it). */
-function rememberFile(k, rec) {
-  const had = hist.get(k);
-  const H = { ...had };
-  for (const u of new Set([...unitsOf(rec), ...Object.keys(H)])) {
-    const x = vh(rec, u);
-    const l = had ? seenOf(H, u) : [];
-    H[u] = [x, ...l.filter((y) => y !== x)].slice(0, HMAX);
+/* "c:id" -> the record as the data file held it at the last read or write. basesKnown: the bases cover the whole file
+   (false only for a copy stored without them), so a record without a base is one the file didn't have. */
+let bases = Object.create(null),
+  basesKnown = false;
+const splitKey = (k) => {
+  const i = k.indexOf(":");
+  return [k.slice(0, i), k.slice(i + 1)];
+};
+const hasRec = (st, c, id) => !!st[c] && Object.hasOwn(st[c], id);
+/* F changed since B (F.rev > B.rev): take what it changed, keep what you changed; returns [record, conflict] */
+function merge3(L, F, B) {
+  const out = { ...L };
+  let took = false,
+    clash = false;
+  for (const u of unitsOf(L, F, B)) {
+    if (sameUnit(F, B, u)) continue;
+    if (sameUnit(L, B, u)) {
+      setUnit(out, F, u);
+      took = true;
+    } else if (!sameUnit(L, F, u)) clash = true;
   }
-  hist.set(k, H);
-  seenAt.set(k, Math.max(seenAt.get(k) || 0, ts(rec)));
+  if (sameContent(out, F)) return [F, false];
+  if (took) for (const f of ["updatedAt", "changedBy"]) if (F[f] !== undefined) out[f] = F[f];
+  out.rev = Math.max(revOf(F), revOf(L)) + 1;
+  return [clean(out), clash];
 }
-/* You (or this page) changed a record: note when each field changed, for merging with other tabs. */
-function touch(k, before, after) {
-  const T = ftime.get(k) || {};
-  const now = Date.now();
-  for (const u of unitsOf(before, after)) if (!before || !sameUnit(before, after, u)) T[u] = now;
-  ftime.set(k, T);
+/* The file's record F against this browser's L (null when it has none) with base B (see the rule above). `rec.kept`
+   and `rec.took` collect the keys to record. */
+function mergeFile(k, L, F, B, rec) {
+  if (!L) return F;
+  if (sameRec(L, F)) return L;
+  /* the same fields: the file's stamps are taken only with a higher rev */
+  if (sameContent(L, F)) return revOf(F) > revOf(L) ? F : L;
+  if (!B) {
+    if (basesKnown) {
+      rec.kept.add(k);
+      return L;
+    }
+    if (revOf(L) > revOf(F)) return L;
+    rec.took.add(k);
+    return F;
+  }
+  if (revOf(F) > revOf(B)) {
+    const [out, clash] = merge3(L, F, B);
+    if (clash) rec.kept.add(k);
+    return out;
+  }
+  if (!sameContent(F, B)) rec.kept.add(k);
+  return L;
 }
-function setRec(c, id, rec) {
-  touch(c + ":" + id, store[c][id], rec);
-  store[c][id] = rec;
+/* The file's records `n` (normalized) merged into a copy of `st`; the bases become the file's records. */
+function mergeIn(st, n, rec) {
+  const next = copyStore(st);
+  for (const k of Object.keys(bases)) {
+    const [c, id] = splitKey(k);
+    if (hasRec(next, c, id) && !hasRec(n, c, id)) rec.kept.add(k);
+  }
+  for (const c of COLLS)
+    for (const id of Object.keys(n[c])) {
+      const k = c + ":" + id,
+        F = n[c][id],
+        B = bases[k];
+      const L = hasRec(next, c, id) ? next[c][id] : null;
+      /* unchanged since the last read or write: nothing to merge */
+      if (!(L && B && sameRec(B, F))) next[c][id] = mergeFile(k, L, F, B, rec);
+      bases[k] = F;
+    }
+  basesKnown = true;
+  return next;
 }
-/* The file's record `disk` against this browser's `cur` (see the rule above). `stale` collects the keys of records where
-   an older value in the file was overridden. */
-function mergeFile(k, cur, disk, stale) {
-  if (!cur) return disk;
-  if (!disk || sameRec(cur, disk)) return cur;
-  const H = hist.get(k);
-  if (!H) return ts(disk) > ts(cur) ? disk : cur;
-  const T = ftime.get(k) || {};
-  const newer = ts(disk) > (seenAt.get(k) || 0);
-  const out = { ...cur };
-  let took = false;
-  for (const u of unitsOf(cur, disk)) {
-    if (sameUnit(cur, disk, u)) continue;
-    const l = seenOf(H, u),
-      d = vh(disk, u);
-    /* newer: a field the file didn't change since the last sync stays yours; older: a value seen before is an old copy */
-    if (newer ? d === l[0] : l.includes(d)) {
-      if (!newer && stale) stale.add(k);
+/* What is written: a record that differs from its base gets a rev above the base's (your edits already raised it;
+   this covers a record kept over an older copy or over an edit made without a new rev). */
+function revsForWrite(snap) {
+  for (const c of COLLS)
+    for (const id of Object.keys(snap[c])) {
+      const r = snap[c][id],
+        b = bases[c + ":" + id];
+      if (!b || r === b || revOf(r) > revOf(b) || sameContent(r, b)) continue;
+      const r2 = { ...r, rev: revOf(b) + 1 };
+      snap[c][id] = r2;
+      if (store[c][id] === r) store[c][id] = r2;
+    }
+}
+/* The data file holds `snap` now (just written). */
+function setBases(snap) {
+  bases = Object.create(null);
+  for (const c of COLLS) for (const id of Object.keys(snap[c])) bases[c + ":" + id] = snap[c][id];
+  basesKnown = true;
+}
+/* Tabs share one copy in browser storage: each tab writes its copy there after every change and takes the other tabs'
+   copies from there. `tabBase` is that shared copy as this tab last wrote or read it, the common base for merging the
+   next copy another tab writes (see mergeTab). */
+let tabBase = null;
+/* Another tab's record O against this tab's M, with S, the record in the shared copy before. Per field, the side that
+   changed it since S wins (what this tab hasn't passed on yet stays). A field both changed goes to the copy with the
+   higher rev: every edit raises it, so that is the later edit (a tie goes to the same side in every tab, so all tabs
+   settle on one value). */
+function mergeTab(M, O, S) {
+  if (!M) return O;
+  if (!O || sameRec(M, O)) return M;
+  const later = revOf(O) !== revOf(M) ? (revOf(O) > revOf(M) ? O : M) : canon(O) > canon(M) ? O : M;
+  if (!S) return later;
+  const out = { ...M };
+  for (const u of unitsOf(M, O, S)) {
+    if (sameUnit(O, S, u) || sameUnit(O, M, u)) continue;
+    if (sameUnit(M, S, u) || later === O) setUnit(out, O, u);
+  }
+  out.rev = Math.max(revOf(M), revOf(O));
+  for (const f of ["updatedAt", "changedBy"])
+    if (later[f] !== undefined) out[f] = later[f];
+    else delete out[f];
+  if (sameRec(out, O)) return O;
+  if (sameRec(out, M)) return M;
+  return clean(out);
+}
+/* The bases as kept in browser storage next to the copy `st`: 1 for a record that is the same as its base (most of
+   them), otherwise the base itself. */
+const boCache = new WeakMap(); // record -> [its base, what is stored]
+function basesOut(st) {
+  const out = {};
+  for (const k of Object.keys(bases)) {
+    const [c, id] = splitKey(k),
+      b = bases[k];
+    const r = hasRec(st, c, id) ? st[c][id] : null;
+    if (!r) {
+      out[k] = b;
       continue;
     }
-    if (vh(cur, u) !== l[0] && (T[u] || ts(cur)) >= ts(disk)) continue;
-    setUnit(out, disk, u);
-    T[u] = Date.now();
-    took = true;
-  }
-  if (!took) return cur;
-  ftime.set(k, T);
-  if (sameContent(out, disk)) return disk;
-  out.updatedAt = isoAt(Math.max(ts(cur), ts(disk)) + 1);
-  if (disk.changedBy !== undefined) out.changedBy = disk.changedBy;
-  return clean(out);
-}
-/* Another tab's record: per field, the later change in this browser wins (ties: the newer record). */
-function mergeTab(k, cur, theirs, tT) {
-  tT = tT || {};
-  if (!cur) {
-    if (Object.keys(tT).length) ftime.set(k, { ...tT });
-    return theirs;
-  }
-  if (!theirs || sameRec(cur, theirs)) return cur;
-  const T = ftime.get(k) || {};
-  const out = { ...cur };
-  let took = false;
-  for (const u of unitsOf(cur, theirs)) {
-    if (sameUnit(cur, theirs, u)) continue;
-    const a = tT[u] || 0,
-      m = T[u] || 0;
-    if (a > m || (a === m && ts(theirs) > ts(cur))) {
-      setUnit(out, theirs, u);
-      if (a) T[u] = a;
-      took = true;
+    const hit = boCache.get(r);
+    if (hit && hit[0] === b) {
+      out[k] = hit[1];
+      continue;
     }
-  }
-  if (!took) return cur;
-  ftime.set(k, T);
-  if (sameContent(out, theirs)) return theirs;
-  out.updatedAt = isoAt(Math.max(ts(cur), ts(theirs)) + 1);
-  return clean(out);
-}
-/* The history and change times as kept in browser storage, next to the copy `st`. A record whose every field's history
-   is just its current value, and whose highest seen updatedAt is its own, is stored as 1 (most records); otherwise only
-   what differs is listed ("@": the highest seen updatedAt). Change times
-   older than two days are dropped (they only matter while two tabs are open). */
-const hoCache = new WeakMap(); // record -> [its history object, what is stored] (a history is replaced, never changed)
-function histOut(st) {
-  const out = {};
-  for (const c of COLLS)
-    for (const id of Object.keys(st[c])) {
-      const k = c + ":" + id,
-        H = hist.get(k),
-        rec = st[c][id];
-      if (!H) continue;
-      const hit = hoCache.get(rec);
-      if (hit && hit[0] === H) {
-        out[k] = hit[1];
-        continue;
-      }
-      let o = null;
-      for (const u of new Set([...unitsOf(rec), ...Object.keys(H)])) {
-        const l = seenOf(H, u);
-        if (l.length !== 1 || l[0] !== vh(rec, u)) (o = o || {})[u] = l.join(" ");
-      }
-      const at = seenAt.get(k) || 0;
-      if (at !== ts(rec)) (o = o || {})["@"] = at.toString(36);
-      out[k] = o || 1;
-      hoCache.set(rec, [H, out[k]]);
-    }
-  return out;
-}
-function ftimeOut() {
-  const out = {},
-    old = Date.now() - 2 * 864e5;
-  for (const [k, T] of ftime) {
-    let o = null;
-    for (const [u, t] of Object.entries(T)) if (t > old) (o = o || {})[u] = t.toString(36);
-    if (o) out[k] = o;
-    else ftime.delete(k);
+    out[k] = r === b || sameRec(r, b) ? 1 : b;
+    boCache.set(r, [b, out[k]]);
   }
   return out;
 }
-const timesIn = (o) => {
-  const T = {};
-  if (o && typeof o === "object")
-    for (const [u, t] of Object.entries(o)) if (parseInt(t, 36) > 0) T[u] = parseInt(t, 36);
-  return T;
-};
-/* A stored history back, for the records of `st` (their highest seen updatedAt goes into `at`). */
-function histIn(saved, st, at) {
-  const m = new Map();
+/* Stored bases back (1 means the record of `st` itself). */
+function basesIn(saved, st) {
+  const m = Object.create(null);
   if (!saved || typeof saved !== "object") return m;
   for (const [k, v] of Object.entries(saved)) {
-    const i = k.indexOf(":"),
-      c = k.slice(0, i),
-      id = k.slice(i + 1);
-    const rec = st[c] && Object.hasOwn(st[c], id) ? st[c][id] : null;
-    if (!rec) continue;
-    const o = v && typeof v === "object" ? v : {};
-    const H = {};
-    for (const u of new Set([...unitsOf(rec), ...Object.keys(o)]))
-      if (u !== "@") H[u] = typeof o[u] === "string" && o[u] ? o[u].split(" ").slice(0, HMAX) : [vh(rec, u)];
-    m.set(k, H);
-    at.set(k, parseInt(o["@"], 36) || ts(rec));
+    const [c, id] = splitKey(k);
+    if (!COLLS.includes(c)) continue;
+    if (v === 1) {
+      if (hasRec(st, c, id)) m[k] = st[c][id];
+    } else if (v && typeof v === "object" && !Array.isArray(v)) m[k] = clean(v);
   }
   return m;
 }
@@ -341,11 +317,14 @@ function wrapperOk(t) {
   const bare = (x) => x.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n\r\u2028\u2029]*/g, "");
   return /^\s*window\.BOARD_DATA\s*=\s*$/.test(bare(t.slice(0, i))) && /^\s*;?\s*$/.test(bare(t.slice(j + 1)));
 }
+const DATA_HEADER =
+  "// Job Search Organizer data. The page and any tool you trust (a script, an AI assistant) may edit this file.\n" +
+  '// Rules: read this file right before you write it. Every record has a revision number "rev": when you add or change\n' +
+  '// a record, set its "rev" to the old value + 1 (a new record: 1). A change without a new rev is not taken.\n' +
+  "// Never delete a record outright: set deleted:true and removedAt, with a new rev. Also set updatedAt and changedBy.\n";
 function serialize(st) {
   return (
-    "// Job Search Organizer data. The page and any tool you trust (a script, an AI assistant) may edit this file.\n" +
-    "// Rules: read this file right before you write it, and stamp every record you add or change with updatedAt = now (ISO, UTC with Z).\n" +
-    "// Never delete a record outright: set deleted:true and a new updatedAt. Other tools also set changedBy to their name.\n" +
+    DATA_HEADER +
     "window.BOARD_DATA = " +
     JSON.stringify({ version: 1, savedAt: new Date().toISOString(), ...extras, ...st }, null, 1) +
     ";\n"
@@ -353,12 +332,6 @@ function serialize(st) {
 }
 keepExtras(window.BOARD_DATA);
 const fileCopy = window.BOARD_DATA && typeof window.BOARD_DATA === "object" ? normalize(window.BOARD_DATA) : null;
-/* What the data file held at the last read or write ("c:id" -> record): a record that differs exists only in this browser. */
-let fileRecs = Object.create(null);
-function setFileRecs(st) {
-  fileRecs = Object.create(null);
-  for (const c of COLLS) for (const id of Object.keys((st && st[c]) || {})) fileRecs[c + ":" + id] = st[c][id];
-}
 let localCopy = null,
   saved = {};
 try {
@@ -371,31 +344,23 @@ try {
 } catch (e) {}
 /* this browser's copy merged with the file as the page loaded it */
 let store = copyStore(localCopy || emptyStore());
-hist = histIn(saved._hist, store, seenAt);
-for (const [k, v] of Object.entries(saved._ft && typeof saved._ft === "object" ? saved._ft : {}))
-  ftime.set(k, timesIn(v));
-/* a copy kept by an earlier version holds the record as the file had it ("bases"; 1 = the record itself) */
-if (!saved._hist && saved._bases && typeof saved._bases === "object")
-  for (const [k, v] of Object.entries(saved._bases)) {
-    const i = k.indexOf(":"),
-      c = k.slice(0, i),
-      id = k.slice(i + 1);
-    const cur = store[c] && Object.hasOwn(store[c], id) ? store[c][id] : null;
-    const b = v === 1 ? cur : v && typeof v === "object" && cur ? normalize({ [c]: { [id]: v } })[c][id] : null;
-    if (b) rememberFile(k, b);
-  }
-if (fileCopy)
-  for (const c of COLLS)
-    for (const id of Object.keys(fileCopy[c])) {
-      store[c][id] = mergeFile(c + ":" + id, store[c][id], fileCopy[c][id]);
-      rememberFile(c + ":" + id, fileCopy[c][id]);
-    }
-setFileRecs(fileCopy);
+if (saved._base && typeof saved._base === "object") {
+  bases = basesIn(saved._base, store);
+  basesKnown = true;
+}
+/* what that first merge recorded: written to backups/ and shown once saving to the folder is on (see recordMerge) */
+let pendingRecord = null;
+if (fileCopy) {
+  const rec = { kept: new Set(), took: new Set() };
+  const before = store;
+  store = mergeIn(store, fileCopy, rec);
+  if (rec.kept.size || rec.took.size) pendingRecord = { rec, browser: before };
+}
 function unsyncedCount() {
   let n = 0;
   for (const c of COLLS)
     for (const id of Object.keys(store[c])) {
-      const b = fileRecs[c + ":" + id],
+      const b = bases[c + ":" + id],
         r = store[c][id];
       if (!b || (b !== r && !sameContent(b, r))) n++;
     }
@@ -491,9 +456,9 @@ function jobsReferredBy(pid) {
   return Object.entries(live("jobs")).filter(([, j]) => j.referralId === pid);
 }
 
-/* ================= writes (every write stamps updatedAt and who changed it) ================= */
-/* Always stamp later than the record's current time, so your edit wins even if a stored time runs ahead of this clock. */
-const stamp = (r) => new Date(Math.max(Date.now(), ts(r) + 1)).toISOString();
+/* ================= writes (every write raises rev and stamps updatedAt and who changed it) ================= */
+/* A record as you just changed it: the next revision, stamped now. */
+const edited = (r, patch) => ({ ...r, ...patch, rev: revOf(r) + 1, updatedAt: nowIso(), changedBy: "you" });
 const has = (c, id) => Object.hasOwn(store[c], id);
 function blockedEdit() {
   if (!VIEW_ONLY) return false;
@@ -501,24 +466,24 @@ function blockedEdit() {
   setTimeout(render, 0);
   return true;
 }
+function setRec(c, id, rec) {
+  store[c][id] = rec;
+}
 function upd(c, id, patch) {
   if (blockedEdit()) return;
   if (!has(c, id)) return;
-  const r = store[c][id];
-  setRec(c, id, { ...r, ...patch, updatedAt: stamp(r), changedBy: "you" });
+  setRec(c, id, edited(store[c][id], patch));
   persist();
 }
 function put(c, id, rec) {
   if (blockedEdit()) return;
-  const r = has(c, id) ? store[c][id] : null;
-  setRec(c, id, { ...rec, updatedAt: stamp(r), changedBy: "you" });
+  setRec(c, id, edited(has(c, id) ? store[c][id] : null, rec));
   persist();
 }
 function del(c, id) {
   if (blockedEdit()) return;
   if (!has(c, id)) return;
-  const r = store[c][id];
-  setRec(c, id, { ...r, deleted: true, removedAt: nowIso(), updatedAt: stamp(r), changedBy: "you" });
+  setRec(c, id, edited(store[c][id], { deleted: true, removedAt: nowIso() }));
   persist();
 }
 let lastUndo = null;

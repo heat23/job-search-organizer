@@ -1,10 +1,9 @@
-// Content-based merge: an older copy written back never undoes your change, whatever its updatedAt says, and a new
-// value from another tool is taken whatever its stamp (future, date-only, local time written as Z); the file's older copy
-// goes to backups/ with a short note. Two tabs settle on the latest change (also an Undo). Restore a backup… (with Undo,
-// kept after focus and reload). My_answers.md read as empty or cut short never deletes answers; Clear all my answers.
-// Older answer keys move to a round only when that is certain. A write landing between the page's read and write is
-// merged. Browser storage full: a typed answer shows a warning. Save time and storage size with 1,000 jobs.
-//   ONLY=C1,C6 node tests/test_round5.js   runs only those blocks (SAMPLE_TREE must be set, see run.mjs)
+// Two tabs settle on the latest change (also an Undo). Restore a backup… (with Undo, kept after focus and reload).
+// My_answers.md read as empty or cut short never deletes answers; Clear all my answers. Older answer keys move to a
+// round only when that is certain. A write landing between the page's read and write is merged. Browser storage full:
+// a typed answer shows a warning. Save time and storage size with 1,000 jobs. (The merge tests that were here, C1, C2,
+// C3, C5, C10 and C11, are replaced by test_revs.js.)
+//   ONLY=C4,C6 node tests/test_round5.js   runs only those blocks (SAMPLE_TREE must be set, see run.mjs)
 const fs = require("fs");
 const path = require("path");
 const { ok, wait, launch, mkpage, report, boardText, parseBoard, files, TREE } = require("./lib.js");
@@ -19,7 +18,7 @@ const focus = async (p, extra = 200) => {
 const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n";
 const disk = async (p) => parseBoard(await p.evaluate(() => window.__get("board_data.js")));
 const answers = (p) => p.evaluate(() => window.__get("Library/My_answers.md").then((t) => t || ""));
-/* the assistant edits one record on disk; `stamp` is its updatedAt (a string, or "now") */
+/* the assistant edits one record on disk (rev + 1); `stamp` is its updatedAt (a string, or "now") */
 const editOnDisk = (p, id, patch, stamp) =>
   p.evaluate(
     ([i, pt, st]) =>
@@ -28,6 +27,7 @@ const editOnDisk = (p, id, patch, stamp) =>
         d.jobs[i] = {
           ...d.jobs[i],
           ...pt,
+          rev: (d.jobs[i].rev || 0) + 1,
           updatedAt: st === "now" ? new Date().toISOString() : st,
           changedBy: "assistant",
         };
@@ -47,145 +47,6 @@ const earlier = (p) => p.$$eval("#p-earlier .hq.earlier", (d) => d.map((x) => x.
   let b;
   try {
     b = await launch();
-    // ---- C1: an assistant edit is kept whatever its updatedAt (future, date-only, local time as Z, older)
-    if (want("C1")) {
-      const ctx = await b.newContext();
-      const p = await mkpage(ctx, { connect: true });
-      await wait(p, 1500);
-      await editOnDisk(p, "quillstone", { notes: "Future-stamped" }, "2099-01-01T00:00:00Z");
-      await focus(p, 1200);
-      const q1 = await p.evaluate(() => get("jobs", "quillstone"));
-      ok(
-        "C1 a future updatedAt is read as now (the edit is kept)",
-        q1.notes === "Future-stamped" && Date.parse(q1.updatedAt) < Date.now() + 6 * 60e3,
-        q1.updatedAt,
-      );
-      ok(
-        "C1 and the file gets the corrected time",
-        Date.parse((await disk(p)).jobs.quillstone.updatedAt) < Date.now() + 6 * 60e3,
-      );
-      await editOnDisk(p, "quillstone", { location: "Correct now stamp" }, "now");
-      await focus(p, 1200);
-      ok(
-        "C1 a later edit stamped with the real time is kept after a future stamp",
-        (await p.evaluate(() => get("jobs", "quillstone").location)) === "Correct now stamp" &&
-          (await disk(p)).jobs.quillstone.location === "Correct now stamp",
-      );
-      await p.evaluate(() => upd("jobs", "quillstone", { notes: "Typed in the page" }));
-      await wait(p, 1200);
-      const day = new Date().toISOString().slice(0, 10);
-      const cases = [
-        ["a date-only updatedAt", { location: "Date-only stamp" }, day],
-        [
-          "local time written as Z, 4 hours behind",
-          { pay: "Local as Z" },
-          new Date(Date.now() - 4 * 3600e3).toISOString(),
-        ],
-        ["an updatedAt from 2020", { url: "https://example.com/older-stamp" }, "2020-01-01T00:00:00.000Z"],
-      ];
-      for (const [label, patch, stamp] of cases) {
-        await editOnDisk(p, "quillstone", patch, stamp);
-        await focus(p, 1200);
-        const [k, v] = Object.entries(patch)[0];
-        const st = await p.evaluate(() => get("jobs", "quillstone"));
-        ok(
-          `C1 an assistant edit with ${label} is kept (and your notes too)`,
-          st[k] === v && (await disk(p)).jobs.quillstone[k] === v && st.notes === "Typed in the page",
-          JSON.stringify([st[k], st.notes]),
-        );
-      }
-      ok("C1 no errors", !p.errs.length, p.errs.join("|"));
-      await ctx.close();
-    }
-    // ---- C2: an older copy written back, with the assistant's own change to the same card but the card's old updatedAt
-    //      (with a newer updatedAt the card counts as edited on purpose, and the file's values are taken: see C11)
-    if (want("C2")) {
-      for (const variant of ["Restore", "Remove", "drag to Interview", "notes typed"]) {
-        const ctx = await b.newContext();
-        const p = await mkpage(ctx, { connect: true });
-        await wait(p, 1500);
-        if (variant === "Restore") {
-          await p.evaluate(() => del("jobs", "harborlight"));
-          await wait(p, 1200);
-        }
-        const t0 = await p.evaluate(() => window.__get("board_data.js")); // the assistant reads the file
-        await p.evaluate((v) => {
-          if (v === "Restore") upd("jobs", "harborlight", { deleted: false, removedAt: null });
-          else if (v === "Remove") del("jobs", "harborlight");
-          else if (v === "notes typed") upd("jobs", "harborlight", { notes: "PERSON TYPED THIS" });
-          else moveCard("jobs", "harborlight", "interview");
-        }, variant);
-        await wait(p, 1200);
-        await p.evaluate((t) => {
-          const d = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
-          d.jobs.harborlight = { ...d.jobs.harborlight, location: "Remote (assistant)", changedBy: "assistant" };
-          window.__put("board_data.js", t.slice(0, t.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n");
-        }, t0);
-        await focus(p, 1500);
-        const st = await p.evaluate(() => store.jobs.harborlight);
-        const dk = (await disk(p)).jobs.harborlight;
-        const kept = (r) =>
-          variant === "Restore"
-            ? !r.deleted
-            : variant === "Remove"
-              ? r.deleted === true
-              : variant === "notes typed"
-                ? r.notes === "PERSON TYPED THIS"
-                : r.lane === "interview";
-        ok(
-          `C2 your saved ${variant} is kept, and the assistant's new location in the same card is taken (page and file)`,
-          kept(st) && kept(dk) && st.location === "Remote (assistant)" && dk.location === "Remote (assistant)",
-          JSON.stringify([st.deleted, st.lane, st.notes, st.location]),
-        );
-        if (variant === "Remove") {
-          const status = await p.$eval("#status", (n) => n.textContent);
-          ok(
-            "C2 the status line says your newer change was kept",
-            /Kept your newer changes to 1 card; the file's older copy is in backups\//.test(status),
-            status,
-          );
-          const older = await p.evaluate(() =>
-            window.__get(`backups/board_data_older_${TODAY()}.js`).then((t) => t || ""),
-          );
-          ok("C2 the file as the assistant wrote it is kept in backups/", older.includes("Remote (assistant)"));
-        }
-        ok(`C2 ${variant} no errors`, !p.errs.length, p.errs.join("|"));
-        await ctx.close();
-      }
-    }
-    // ---- C3: you and the assistant changed the same field: the later change wins
-    if (want("C3")) {
-      const ctx = await b.newContext();
-      const p = await mkpage(ctx, { connect: true });
-      await wait(p, 1500);
-      await p.evaluate(() => {
-        upd("jobs", "fernhill", { notes: "Mine, typed now" });
-        clearTimeout(saveTimer);
-      });
-      await editOnDisk(p, "fernhill", { notes: "Theirs, an hour ago" }, new Date(Date.now() - 3600e3).toISOString());
-      await focus(p, 1200);
-      ok(
-        "C3 your later change wins over an older edit to the same field",
-        (await p.evaluate(() => get("jobs", "fernhill").notes)) === "Mine, typed now",
-      );
-      await p.evaluate(() => {
-        upd("jobs", "orchardline", { notes: "Mine, typed first" });
-        clearTimeout(saveTimer);
-      });
-      await editOnDisk(
-        p,
-        "orchardline",
-        { notes: "Theirs, a minute later" },
-        new Date(Date.now() + 60e3).toISOString(),
-      );
-      await focus(p, 1200);
-      ok(
-        "C3 the assistant's later edit to the same field wins over yours",
-        (await p.evaluate(() => get("jobs", "orchardline").notes)) === "Theirs, a minute later",
-      );
-      ok("C3 no errors", !p.errs.length, p.errs.join("|"));
-      await ctx.close();
-    }
     // ---- C4: two tabs settle on the latest change, also when it puts a value back (Undo)
     if (want("C4")) {
       const ctx = await b.newContext();
@@ -216,28 +77,6 @@ const earlier = (p) => p.$$eval("#p-earlier .hq.earlier", (d) => d.map((x) => x.
         q.join(" / "),
       );
       ok("C4 no errors", !A.errs.length && !B.errs.length, A.errs.concat(B.errs).join("|"));
-      await ctx.close();
-    }
-    // ---- C5: browser storage too full for the merge history: a one-time note, saving goes on
-    if (want("C5")) {
-      const ctx = await b.newContext();
-      const p = await mkpage(ctx, {
-        connect: true,
-        init: `(() => { const set = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) {
-          if (window.__full && String(v).includes('"_hist"')) throw new DOMException("full", "QuotaExceededError");
-          return set.call(this, k, v); }; })();`,
-      });
-      await wait(p, 1500);
-      await p.evaluate(() => (window.__full = 1));
-      await p.evaluate(() => upd("jobs", "harborlight", { notes: "Storage is full" }));
-      await wait(p, 1200);
-      const status = await p.$eval("#status", (n) => n.textContent);
-      ok("C5 the status line says the merge history couldn't be kept", /Browser storage is full/.test(status), status);
-      ok(
-        "C5 and the change is saved in the file",
-        (await disk(p)).jobs.harborlight.notes === "Storage is full" && (await p.evaluate(() => localOk)) === true,
-      );
-      ok("C5 no errors", !p.errs.length, p.errs.join("|"));
       await ctx.close();
     }
     // ---- C6: Restore a backup… (lists backups with dates and counts, asks, saves the current file first, Undo)
@@ -385,7 +224,7 @@ const earlier = (p) => p.$$eval("#p-earlier .hq.earlier", (d) => d.map((x) => x.
           /^# My answers/.test(t) && [/Pitch line one/, /Growth\./, /Team of 6/, /new answer/].every((r) => r.test(t)),
           t.slice(-200),
         );
-        if (bad) {
+        if (bad && !bad.startsWith("# My answers")) {
           const odd = (await p.evaluate(() => window.__ls("backups") || [])).filter((n) => /^My_answers_odd_/.test(n));
           ok(`C7 (${label}) the odd file is copied to backups/ first`, odd.length === 1, odd.join());
         }
@@ -408,13 +247,16 @@ const earlier = (p) => p.$$eval("#p-earlier .hq.earlier", (d) => d.map((x) => x.
       await p.evaluate(() => mySet("prep:lumenfield::New Q", "x"));
       await wait(p, 2000);
       const t1 = await answers(p);
-      ok("C7 one answer deleted by hand stays deleted", !/Growth/.test(t1) && /Pitch line one/.test(t1));
+      ok(
+        "C7 one answer deleted by hand is written back (Remove is the way)",
+        /Growth/.test(t1) && /Pitch line one/.test(t1),
+      );
       await p.evaluate(() => goSection("library"));
       await wait(p, 600);
       await p.click(".hlclear button");
       ok(
         "C7 Clear all my answers asks first",
-        /Remove all 3 of your answers/.test(await p.$eval(".hlclear", (n) => n.textContent)),
+        /Remove all 4 of your answers/.test(await p.$eval(".hlclear", (n) => n.textContent)),
       );
       await p.click(".hlclear .hl-yes");
       await wait(p, 2000);
@@ -544,150 +386,6 @@ const earlier = (p) => p.$$eval("#p-earlier .hq.earlier", (d) => d.map((x) => x.
         status,
       );
       ok("C9 storage no errors", !q.errs.length, q.errs.join("|"));
-      await ctx2.close();
-    }
-    // ---- C10: a copy kept by the previous version (with "bases") still merges field by field after the update
-    if (want("C10")) {
-      const ctx = await b.newContext();
-      const orig = parseBoard(boardText).jobs.quillstone;
-      const p1 = await mkpage(ctx, {});
-      await p1.evaluate((o) => {
-        const st = JSON.parse(localStorage.getItem(lsKey("board")));
-        st.jobs.quillstone = { ...o, notes: "Typed before the update", updatedAt: new Date().toISOString() };
-        const bases = {};
-        for (const c of COLLS) for (const id of Object.keys(st[c])) bases[c + ":" + id] = 1;
-        bases["jobs:quillstone"] = o;
-        delete st._hist;
-        delete st._ft;
-        st._bases = bases;
-        localStorage.setItem(lsKey("board"), JSON.stringify(st));
-      }, orig);
-      await p1.close();
-      const d = parseBoard(boardText);
-      d.jobs.quillstone = {
-        ...orig,
-        location: "Assistant, older stamp",
-        updatedAt: new Date(Date.now() - 60e3).toISOString(),
-        changedBy: "assistant",
-      };
-      const text = withData(d);
-      fs.writeFileSync(path.join(TREE, "board_data.js"), text);
-      try {
-        const p2 = await mkpage(ctx, { text });
-        const q = await p2.evaluate(() => get("jobs", "quillstone"));
-        ok(
-          "C10 after the update, your unsaved edit and the assistant's edit to another field are both kept",
-          q.notes === "Typed before the update" && q.location === "Assistant, older stamp",
-          JSON.stringify([q.notes, q.location]),
-        );
-        ok("C10 no errors", !p2.errs.length, p2.errs.join("|"));
-      } finally {
-        fs.writeFileSync(path.join(TREE, "board_data.js"), boardText);
-      }
-      await ctx.close();
-    }
-    // ---- C11: an assistant that stamps its edits can put a field back to a value it had before
-    if (want("C11")) {
-      const ctx = await b.newContext();
-      const p = await mkpage(ctx, { connect: true });
-      await wait(p, 1500);
-      const t0 = await p.evaluate(() => window.__get("board_data.js")); // an older copy, read before every step below
-      const step = async (id, patch) => {
-        await wait(p, 5);
-        await editOnDisk(p, id, patch, "now");
-        await focus(p, 900);
-        const [st, dk] = [await p.evaluate((i) => store.jobs[i], id), (await disk(p)).jobs[id]];
-        return Object.entries(patch).every(
-          ([k, v]) =>
-            JSON.stringify(st[k] ?? null) === JSON.stringify(v ?? null) &&
-            JSON.stringify(dk[k] ?? null) === JSON.stringify(v ?? null),
-        );
-      };
-      const runs = async (label, id, patches) => {
-        const r = [];
-        for (const pt of patches) r.push(await step(id, pt));
-        ok(`C11 ${label}: every step is applied (page and file)`, r.every(Boolean), JSON.stringify(r));
-      };
-      const f0 = (await p.evaluate(() => get("jobs", "harborlight").followUp)) || "2030-01-05";
-      await runs("lane Applied → Screen → Applied", "harborlight", [{ lane: "screen" }, { lane: "applied" }]);
-      await runs("pinned true → false → true", "fernhill", [{ pinned: true }, { pinned: false }, { pinned: true }]);
-      await runs("followUp cleared, then set back to its earlier date", "harborlight", [
-        { followUp: null },
-        { followUp: f0 },
-        { followUp: null },
-        { followUp: f0 },
-      ]);
-      const R = new Date(Date.now() - 3600e3).toISOString();
-      await runs("removed → restored → removed (same removedAt)", "orchardline", [
-        { deleted: true, removedAt: R },
-        { deleted: false, removedAt: null },
-        { deleted: true, removedAt: R },
-      ]);
-      await runs("closedReason toggled back", "marigold", [
-        { closedReason: "No reply" },
-        { closedReason: "Rejected" },
-        { closedReason: "No reply" },
-      ]);
-      /* the older copy read before all that, written back with its old stamps, still loses */
-      await p.evaluate((t) => window.__put("board_data.js", t), t0);
-      await focus(p, 1500);
-      const st = await p.evaluate(() => ({
-        lane: store.jobs.harborlight.lane,
-        f: store.jobs.harborlight.followUp,
-        pin: store.jobs.fernhill.pinned,
-        del: store.jobs.orchardline.deleted,
-        why: store.jobs.marigold.closedReason,
-      }));
-      const dk = (await disk(p)).jobs;
-      ok(
-        "C11 an older copy written back after those changes still loses (page and file)",
-        st.lane === "applied" &&
-          st.f === f0 &&
-          st.pin === true &&
-          st.del === true &&
-          st.why === "No reply" &&
-          dk.fernhill.pinned === true &&
-          dk.orchardline.deleted === true &&
-          dk.marigold.closedReason === "No reply",
-        JSON.stringify(st),
-      );
-      /* a person's change, then the older copy written back by a tool that didn't stamp it: yours stays */
-      await p.evaluate(() => upd("jobs", "fernhill", { pinned: false }));
-      await wait(p, 1200);
-      await p.evaluate(
-        (t) => window.__put("board_data.js", t),
-        t0.replace('"fernhill": {', '"fernhill": {\n  "pinned": true,'),
-      );
-      await focus(p, 1500);
-      ok(
-        "C11 your un-star survives an older copy written back",
-        (await p.evaluate(() => store.jobs.fernhill.pinned)) === false,
-      );
-      ok("C11 no errors", !p.errs.length, p.errs.join("|"));
-      await ctx.close();
-      /* one 2099 stamp, then edits with the real time keep applying, also back to an earlier value */
-      const ctx2 = await b.newContext();
-      const q = await mkpage(ctx2, { connect: true });
-      await wait(q, 1500);
-      const loc0 = await q.evaluate(() => get("jobs", "quillstone").location);
-      await editOnDisk(q, "quillstone", { notes: "2099 stamp" }, "2099-01-01T00:00:00Z");
-      await focus(q, 900);
-      const r = [];
-      for (const pt of [{ location: "Remote" }, { location: loc0 }, { location: "Remote" }, { notes: "" }]) {
-        await wait(q, 5);
-        await editOnDisk(q, "quillstone", pt, "now");
-        await focus(q, 900);
-        const [k, v] = Object.entries(pt)[0];
-        r.push(
-          (await q.evaluate((k) => store.jobs.quillstone[k], k)) === v && (await disk(q)).jobs.quillstone[k] === v,
-        );
-      }
-      ok(
-        "C11 after one 2099 stamp, edits stamped with the real time keep applying",
-        r.every(Boolean),
-        JSON.stringify(r),
-      );
-      ok("C11 2099 no errors", !q.errs.length, q.errs.join("|"));
       await ctx2.close();
     }
     // ---- P: 1,000 jobs: a save stays quick and the copy in browser storage stays small

@@ -2,11 +2,11 @@
 // while a panel is open, closed-card call tags, prep-sheet theme tokens, and Next up / to-do / remove flows.
 const fs = require("fs");
 const path = require("path");
-const { ok, wait, esc2, launch, mkpage, report, data, boardText, parseBoard, TREE } = require("./lib.js");
+const { ok, wait, esc2, launch, mkpage, report, data, boardText, parseBoard, TREE, withRevs } = require("./lib.js");
 
 const JOB = "lumenfield";
 const now = () => new Date().toISOString();
-const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n";
+const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(withRevs(d), null, 1) + ";\n";
 const copy = () => JSON.parse(JSON.stringify(data));
 const focus = async (p) => {
   await p.evaluate(() => window.dispatchEvent(new Event("focus")));

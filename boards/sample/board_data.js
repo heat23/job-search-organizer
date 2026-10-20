@@ -1,6 +1,7 @@
 // Job Search Organizer data. The page and any tool you trust (a script, an AI assistant) may edit this file.
-// Rules: stamp every record you add or change with updatedAt = now (ISO time, UTC with Z); an older copy never wins.
-// Never delete a record outright: set deleted:true and a new updatedAt. Other tools also set changedBy to their name.
+// Rules: read this file right before you write it. Every record has a revision number "rev": when you add or change
+// a record, set its "rev" to the old value + 1 (a new record: 1). A change without a new rev is not taken.
+// Never delete a record outright: set deleted:true and removedAt, with a new rev. Also set updatedAt and changedBy.
 window.BOARD_DATA = {
  "version": 1,
  "savedAt": "2026-09-29T15:00:00.000Z",
@@ -21,6 +22,7 @@ window.BOARD_DATA = {
    "sentResume": "v3",
    "referralId": "p_hana",
    "notes": "",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -39,6 +41,7 @@ window.BOARD_DATA = {
    "resume": "v2",
    "sentResume": "v2",
    "notes": "",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -56,6 +59,7 @@ window.BOARD_DATA = {
    "resume": "v2",
    "sentResume": "v2",
    "notes": "",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -71,6 +75,7 @@ window.BOARD_DATA = {
    "resume": "v3",
    "referralId": "p_dev",
    "notes": "Ask Dev for a referral before applying.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -85,6 +90,7 @@ window.BOARD_DATA = {
    "pinned": true,
    "pinnedAt": "2026-09-28T15:00:00.000Z",
    "notes": "",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -97,6 +103,7 @@ window.BOARD_DATA = {
    "lane": "todo",
    "movedAt": "2026-09-25T15:00:00.000Z",
    "notes": "",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -110,6 +117,7 @@ window.BOARD_DATA = {
    "movedAt": "2026-09-23T15:00:00.000Z",
    "longShot": true,
    "notes": "Asks for ten years; I have seven.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -127,6 +135,7 @@ window.BOARD_DATA = {
    "resume": "v2",
    "sentResume": "v2",
    "notes": "Recruiter: Sam. Next is a take-home exercise.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -144,6 +153,7 @@ window.BOARD_DATA = {
    "resume": "v1",
    "sentResume": "v1",
    "notes": "Onsite next week: system design and two coding rounds.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -161,6 +171,7 @@ window.BOARD_DATA = {
    "resume": "v1",
    "sentResume": "v1",
    "notes": "",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   }
@@ -179,6 +190,7 @@ window.BOARD_DATA = {
    "movedAt": "2026-09-24T15:00:00.000Z",
    "followUp": "2026-10-24",
    "notes": "Registered online. Their recruiter has two backend roles open this month.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -193,6 +205,7 @@ window.BOARD_DATA = {
    "lane": "registered",
    "movedAt": "2026-09-20T15:00:00.000Z",
    "notes": "Uploaded résumé through the form.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -206,6 +219,7 @@ window.BOARD_DATA = {
    "firmUrl": "https://ardent.example/",
    "lane": "todo",
    "notes": "Sign-up is by email only.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -220,6 +234,7 @@ window.BOARD_DATA = {
    "followUp": "2026-09-28",
    "submittedTo": "Orchardline (Senior Full-Stack Engineer)",
    "notes": "Submitted me to Orchardline. Don't apply there directly.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   }
@@ -235,6 +250,7 @@ window.BOARD_DATA = {
    "movedAt": "2026-09-25T15:00:00.000Z",
    "followUp": "2026-10-02",
    "notes": "",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -246,6 +262,7 @@ window.BOARD_DATA = {
    "url": "https://example.com/in/elena-marsh",
    "lane": "todo",
    "notes": "",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -259,6 +276,7 @@ window.BOARD_DATA = {
    "movedAt": "2026-09-27T15:00:00.000Z",
    "followUp": "2026-10-04",
    "notes": "Former teammate.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -271,6 +289,7 @@ window.BOARD_DATA = {
    "lane": "helped",
    "movedAt": "2026-09-25T15:00:00.000Z",
    "notes": "Referred me on the careers site.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -283,6 +302,7 @@ window.BOARD_DATA = {
    "movedAt": "2026-09-15T15:00:00.000Z",
    "followUp": "2026-09-29",
    "notes": "Former tech lead. Practice session every other week.",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   }
@@ -296,6 +316,7 @@ window.BOARD_DATA = {
    "from": "you",
    "done": false,
    "order": 0,
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -307,6 +328,7 @@ window.BOARD_DATA = {
    "from": "assistant",
    "done": false,
    "order": 1,
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -318,6 +340,7 @@ window.BOARD_DATA = {
    "from": "you",
    "done": false,
    "order": 2,
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -330,6 +353,7 @@ window.BOARD_DATA = {
    "done": true,
    "doneAt": "2026-09-28T15:00:00.000Z",
    "order": 3,
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   }
@@ -340,6 +364,7 @@ window.BOARD_DATA = {
    "week": 1,
    "order": 1,
    "text": "Pick the roles you want: level, stack, remote or on site",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you",
    "done": true,
@@ -350,6 +375,7 @@ window.BOARD_DATA = {
    "week": 1,
    "order": 2,
    "text": "Refresh your résumé and profile; list five stories with numbers",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -359,6 +385,7 @@ window.BOARD_DATA = {
    "order": 1,
    "text": "Register with every agency on the Headhunters tab",
    "auto": "hunters_registered",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -367,6 +394,7 @@ window.BOARD_DATA = {
    "week": 2,
    "order": 2,
    "text": "Practice: one system design and three coding problems",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -375,6 +403,7 @@ window.BOARD_DATA = {
    "week": 3,
    "order": 1,
    "text": "Ask former teammates for referrals at your top companies",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -384,6 +413,7 @@ window.BOARD_DATA = {
    "order": 2,
    "text": "Add ten people who could refer you or introduce you",
    "auto": "people10",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -392,6 +422,7 @@ window.BOARD_DATA = {
    "week": 4,
    "order": 1,
    "text": "Follow up once with everyone who didn't reply",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   },
@@ -400,6 +431,7 @@ window.BOARD_DATA = {
    "week": 4,
    "order": 2,
    "text": "Book a mock interview with a friend before your first onsite",
+   "rev": 1,
    "updatedAt": "2026-09-29T15:00:00.000Z",
    "changedBy": "you"
   }

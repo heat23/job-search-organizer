@@ -208,12 +208,13 @@ async function startup() {
 }
 
 /* ================= Restore a backup… =================
-   Lists backups/board_data_*.js (the daily copies, the older copies a merge kept and the copies saved before a restore),
+   Lists backups/board_data_*.js (the daily copies, the versions a merge kept out, the copies saved before a restore),
    or takes any .js file you pick. After a confirm, the data file as it is now goes to
-   backups/board_data_before_restore_<time>.js, then the backup's records replace this board's: each one is stamped as a
-   change you just made, so it wins everywhere (the file, other tabs, the next merge). Cards added since the backup are
-   removed (Restore brings one back). The toast can undo it. Copying an old file over board_data.js does not restore
-   anything: the page reads that as an older copy and keeps the newer values. */
+   backups/board_data_before_restore_<time>.js, then every record of the backup that differs from the board's becomes
+   the board's next revision (rev = the current rev + 1), so it wins everywhere: the file, other tabs, the next merge.
+   Cards added since the backup are removed (Restore brings one back). Then every job folder is filed by stage again.
+   The toast can undo it the same way. Copying an old file over board_data.js does not restore anything: its revs are
+   not newer, so the page keeps your version (and saves the copied file in backups/). */
 const plural = (n, noun) => `${n} ${n === 1 ? noun : noun === "person" ? "people" : noun + "s"}`;
 function backupInfo(text) {
   try {
@@ -246,29 +247,32 @@ const whenLabel = (t) =>
     hour: "numeric",
     minute: "2-digit",
   });
-/* the board's records replaced by `src` (see the top); returns the number of cards restored */
+/* the board's records replaced by `src` (see the top) */
 function replaceStore(src) {
   const next = emptyStore();
   for (const c of COLLS)
     for (const id of new Set([...Object.keys(store[c]), ...Object.keys(src[c])])) {
       const old = Object.hasOwn(store[c], id) ? store[c][id] : null;
       const r = Object.hasOwn(src[c], id) ? src[c][id] : null;
-      if (!r && old.deleted) {
+      if ((!r && old.deleted) || (r && old && sameContent(r, old))) {
         next[c][id] = old;
         continue;
       }
-      const rec = clean({
-        ...(r || { ...old, deleted: true, removedAt: nowIso() }),
-        updatedAt: stamp(old),
-        changedBy: "you",
-      });
-      touch(c + ":" + id, old, rec);
-      next[c][id] = rec;
+      const want = r ? { ...r } : { ...old, deleted: true, removedAt: nowIso() };
+      /* a card removed again by the restore: its files wait the full time in the removed folder again */
+      if (r && r.deleted && old && !old.deleted) want.removedAt = nowIso();
+      next[c][id] = clean({ ...want, rev: revOf(old) + 1, updatedAt: nowIso(), changedBy: "you" });
     }
   store = next;
   persist();
   render();
   if (openRef) refreshDrawer();
+}
+/* after a restore or its undo: write it, then file every job folder by its restored stage and list the folders again */
+async function afterReplace() {
+  await writeFile();
+  await fileJobs(true);
+  scanFolders(true);
 }
 async function restoreBackup(text, label) {
   if (!dirHandle || !canWrite) {
@@ -300,10 +304,10 @@ async function restoreBackup(text, label) {
   }
   const before = copyStore(store);
   replaceStore(info.data);
-  await writeFile();
+  await afterReplace();
   showToast(`Restored the copy from ${label} (${info.counts}). Your board as it was is in backups/.`, async () => {
     replaceStore(before);
-    await writeFile();
+    await afterReplace();
     showToast("Restore undone.");
   });
   return true;

@@ -24,6 +24,17 @@ const boardText = fs.readFileSync(path.join(TREE, "board_data.js"), "utf8");
 const parseBoard = (t) => JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
 const data = parseBoard(boardText);
 
+/* An edit the way AGENTS.md asks for it: every record of `d` that differs from `from` (default: the sample) gets
+   rev = its old rev + 1, so the page takes it. Returns d. */
+function withRevs(d, from = data) {
+  for (const c of ["jobs", "hunters", "people", "todos", "plan"])
+    for (const id of Object.keys(d[c] || {})) {
+      const old = from[c] && from[c][id];
+      if (!old || JSON.stringify(old) !== JSON.stringify(d[c][id]))
+        d[c][id] = { ...d[c][id], rev: ((old && old.rev) || 0) + 1 };
+    }
+  return d;
+}
 /* The files the fake folder starts with: the tree, plus a placeholder résumé and cover letter in each job's folder */
 function files(extra, text) {
   const f = readTree(TREE);
@@ -97,6 +108,7 @@ module.exports = {
   data,
   boardText,
   parseBoard,
+  withRevs,
   ok,
   results,
   wait,

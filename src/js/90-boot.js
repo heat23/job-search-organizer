@@ -170,30 +170,24 @@ window.addEventListener("focus", () => {
   focusRun = onFocus();
 });
 /* Keep two open copies of the page in step. An open panel shows the other tab's change like a change from the folder.
-   The other tab's records merge field by field: the field this browser changed last wins (see mergeTab), so every tab
-   settles on the latest change. The values the other tab saw in the file are added to this tab's history. */
+   The other tab's records merge with this tab's by mergeTab, and a newer base it read from the file is taken over, so a
+   change made in either tab counts as yours when the file is merged next. */
 function mergeOtherTab(raw) {
   const theirs = normalize(raw);
-  const tf = raw && raw._ft && typeof raw._ft === "object" ? raw._ft : {};
+  const tb = basesIn(raw && raw._base, theirs);
+  const S = tabBase || emptyStore();
   const next = copyStore(store);
   for (const c of COLLS)
-    for (const id of Object.keys(theirs[c])) {
-      const k = c + ":" + id;
-      next[c][id] = mergeTab(k, next[c][id], theirs[c][id], timesIn(tf[k]));
-    }
+    for (const id of Object.keys(theirs[c]))
+      next[c][id] = mergeTab(
+        hasRec(next, c, id) ? next[c][id] : null,
+        theirs[c][id],
+        hasRec(S, c, id) ? S[c][id] : bases[c + ":" + id],
+      );
+  for (const [k, b] of Object.entries(tb)) if (!bases[k] || revOf(b) > revOf(bases[k])) bases[k] = b;
+  if (Object.keys(tb).length) basesKnown = true;
+  tabBase = theirs;
   store = next;
-  const at = new Map();
-  for (const [k, H] of histIn(raw && raw._hist, theirs, at)) {
-    seenAt.set(k, Math.max(seenAt.get(k) || 0, at.get(k)));
-    const had = hist.get(k);
-    if (!had) hist.set(k, H);
-    else {
-      const mine = { ...had };
-      for (const [u, l] of Object.entries(H))
-        mine[u] = [...seenOf(had, u), ...l.filter((x) => !seenOf(had, u).includes(x))].slice(0, HMAX);
-      hist.set(k, mine);
-    }
-  }
 }
 window.addEventListener("storage", (e) => {
   if (e.key !== lsKey("board") || !e.newValue) return;
@@ -230,6 +224,7 @@ setInterval(
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
     flushPending();
+    persistLocal(true);
     if (dirty) {
       clearTimeout(saveTimer);
       writeFile();
@@ -238,7 +233,7 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", () => {
   flushPending();
-  persistLocal();
+  persistLocal(true);
 });
 window.addEventListener("beforeunload", (e) => {
   flushPending();

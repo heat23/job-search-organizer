@@ -1,8 +1,8 @@
-// Merge safety: a stale copy of board_data.js never undoes your saved edits, Removes or Restores; an edit made while
-// the file is being written is kept; bases survive a reload; two tabs merge field by field; answers to a repeated
-// question keep their keys when other copies are removed or reordered; answers deleted from My_answers.md stay
-// deleted; two tabs share waiting answers; small review fixes (data file check, folder values, filing retry, settings).
-//   ONLY=R1,R5 node tests/test_round4.js   runs only those blocks (SAMPLE_TREE must be set, see run.mjs)
+// An edit made while the file is being written is kept; answers to a repeated question keep their keys when other
+// copies are removed or reordered; Remove deletes an answer in every tab, and an answer deleted from My_answers.md by
+// hand is written back; two tabs share waiting answers; small review fixes (data file check, folder values, filing
+// retry, settings). (The merge tests that were here, R1, R3 and R4, are replaced by test_revs.js.)
+//   ONLY=R2,R5 node tests/test_round4.js   runs only those blocks (SAMPLE_TREE must be set, see run.mjs)
 const fs = require("fs");
 const path = require("path");
 const { ok, wait, launch, mkpage, report, data, boardText, parseBoard, files, TREE } = require("./lib.js");
@@ -17,33 +17,22 @@ const focus = async (p, extra = 200) => {
 const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n";
 const disk = async (p) => parseBoard(await p.evaluate(() => window.__get("board_data.js")));
 const answers = (p) => p.evaluate(() => window.__get("Library/My_answers.md").then((t) => t || ""));
-/* the assistant writes its whole copy `t0` (read earlier) back, with its own change to quillstone */
-const writeBack = (p, t0) =>
-  p.evaluate((t) => {
-    const d = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
-    d.jobs.quillstone = {
-      ...d.jobs.quillstone,
-      location: "Remote (assistant)",
-      updatedAt: new Date(Date.now() + 1000).toISOString(),
-      changedBy: "assistant",
-    };
-    window.__put("board_data.js", t.slice(0, t.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n");
-  }, t0);
-/* the assistant edits one record on disk; stampFn(old updatedAt) gives its updatedAt */
-const editOnDisk = (p, id, patch, keepStamp) =>
+/* the assistant edits one record on disk (rev + 1, as AGENTS.md asks) */
+const editOnDisk = (p, id, patch) =>
   p.evaluate(
-    ([i, pt, keep]) =>
+    ([i, pt]) =>
       window.__get("board_data.js").then((t) => {
         const d = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
         d.jobs[i] = {
           ...d.jobs[i],
           ...pt,
-          updatedAt: keep ? d.jobs[i].updatedAt : new Date(Date.now() + 1000).toISOString(),
+          rev: (d.jobs[i].rev || 0) + 1,
+          updatedAt: new Date().toISOString(),
           changedBy: "assistant",
         };
         window.__put("board_data.js", t.slice(0, t.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n");
       }),
-    [id, patch, !!keepStamp],
+    [id, patch],
   );
 const SLOW = `(() => { const M = window.MemFS.MemFile.prototype, cw = M.createWritable;
   M.createWritable = async function () { const w = await cw.call(this); const c = w.close;
@@ -56,80 +45,6 @@ const Q90 = "What does success look like in 90 days?";
   let b;
   try {
     b = await launch();
-    // ---- R1: a stale copy written back by another tool never undoes what you saved
-    if (want("R1")) {
-      for (const variant of ["field edit", "Remove", "Restore"]) {
-        const ctx = await b.newContext();
-        const p = await mkpage(ctx, { connect: true });
-        await wait(p, 1500);
-        if (variant === "Restore") {
-          await p.evaluate(() => del("jobs", "harborlight"));
-          await wait(p, 1200);
-        }
-        const t0 = await p.evaluate(() => window.__get("board_data.js")); // the assistant reads the file
-        await p.evaluate((v) => {
-          if (v === "field edit") upd("jobs", "harborlight", { notes: "PERSON TYPED THIS" });
-          else if (v === "Remove") del("jobs", "harborlight");
-          else upd("jobs", "harborlight", { deleted: false });
-        }, variant);
-        await wait(p, 1200);
-        await writeBack(p, t0);
-        await focus(p, 1500);
-        const st = await p.evaluate(() => store.jobs.harborlight);
-        const dk = (await disk(p)).jobs;
-        const want1 =
-          variant === "field edit"
-            ? st.notes === "PERSON TYPED THIS" && dk.harborlight.notes === "PERSON TYPED THIS"
-            : variant === "Remove"
-              ? st.deleted === true && dk.harborlight.deleted === true
-              : !st.deleted && !dk.harborlight.deleted;
-        ok(
-          `R1 a stale copy written back doesn't undo your saved ${variant} (page and file)`,
-          want1,
-          JSON.stringify({ st: [st.notes, st.deleted], dk: [dk.harborlight.notes, dk.harborlight.deleted] }),
-        );
-        ok(
-          `R1 (${variant}) the assistant's own newer edit in that copy is kept`,
-          dk.quillstone.location === "Remote (assistant)" &&
-            (await p.evaluate(() => get("jobs", "quillstone").location)) === "Remote (assistant)",
-        );
-        ok(`R1 ${variant} no errors`, !p.errs.length, p.errs.join("|"));
-        await ctx.close();
-      }
-      const ctx = await b.newContext();
-      const p = await mkpage(ctx, { connect: true });
-      await wait(p, 1500);
-      await editOnDisk(p, "orchardline", { pay: "$190k (assistant, not stamped)" }, true);
-      await focus(p, 1200);
-      ok(
-        "R1 an assistant edit that kept the old updatedAt is taken (you hadn't changed the record)",
-        (await p.evaluate(() => get("jobs", "orchardline").pay)) === "$190k (assistant, not stamped)" &&
-          (await disk(p)).jobs.orchardline.pay === "$190k (assistant, not stamped)",
-      );
-      /* your edit (not saved yet: the save waits 400 ms) and an unstamped assistant edit, then focus */
-      await p.evaluate(async () => {
-        upd("jobs", "fernhill", { notes: "Mine, not saved yet" });
-        const t = await window.__get("board_data.js");
-        const d = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
-        d.jobs.fernhill = { ...d.jobs.fernhill, notes: "Theirs, not stamped", location: "Austin (assistant)" };
-        window.__put("board_data.js", t.slice(0, t.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n");
-        window.dispatchEvent(new Event("focus"));
-        await focusRun;
-      });
-      await wait(p, 1500);
-      const f = await p.evaluate(() => get("jobs", "fernhill"));
-      const fd = (await disk(p)).jobs.fernhill;
-      ok(
-        "R1 an unstamped edit takes only the fields you didn't change (yours wins the field you both changed)",
-        f.notes === "Mine, not saved yet" &&
-          f.location === "Austin (assistant)" &&
-          fd.notes === f.notes &&
-          fd.location === f.location,
-        JSON.stringify([f.notes, f.location, fd.notes, fd.location]),
-      );
-      ok("R1 unstamped no errors", !p.errs.length, p.errs.join("|"));
-      await ctx.close();
-    }
     // ---- R2: an edit made while the data file is being written is not marked saved
     if (want("R2")) {
       const ctx = await b.newContext();
@@ -151,115 +66,6 @@ const Q90 = "What does success look like in 90 days?";
       );
       ok("R2 and nothing is left unsaved", (await p.evaluate(() => [dirty, unsyncedCount()])).join() === "false,0");
       ok("R2 no errors", !p.errs.length, p.errs.join("|"));
-      await ctx.close();
-    }
-    // ---- R3: the merge history is kept across a reload, also for records that were in sync
-    if (want("R3")) {
-      for (const [label, stampFn, keep] of [
-        ["kept the old updatedAt", (old) => old, true],
-        ["a newer updatedAt", () => new Date(Date.now() + 5000).toISOString(), true],
-        /* the merge goes by content, not by time: a new value is an edit whatever its updatedAt (this check expected the
-           old timestamp rule, "ignored", before the content-based merge) */
-        ["an updatedAt older than your last save", () => "2020-01-01T00:00:00.000Z", true],
-      ]) {
-        const ctx = await b.newContext();
-        const p1 = await mkpage(ctx, { connect: true });
-        await wait(p1, 1500);
-        await p1.evaluate(() => upd("jobs", "quillstone", { notes: "Page edit before closing" }));
-        await wait(p1, 1200);
-        const synced = await p1.evaluate(() => window.__get("board_data.js"));
-        await p1.close();
-        const d = parseBoard(synced);
-        d.jobs.quillstone = {
-          ...d.jobs.quillstone,
-          location: "Remote (assistant, page closed)",
-          updatedAt: stampFn(d.jobs.quillstone.updatedAt),
-          changedBy: "assistant",
-        };
-        const text = synced.slice(0, synced.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n";
-        fs.writeFileSync(path.join(TREE, "board_data.js"), text);
-        try {
-          const p2 = await mkpage(ctx, { text, init: "window.ORGANIZER_FOLDER = window.__pick;" });
-          await wait(p2, 2000);
-          const q = await p2.evaluate(() => get("jobs", "quillstone"));
-          const dk = (await disk(p2)).jobs.quillstone;
-          const kept = q.location === "Remote (assistant, page closed)" && dk.location === q.location;
-          ok(
-            `R3 after a reload, an assistant edit with ${label} is ${keep ? "kept" : "ignored and written over"}`,
-            (keep ? kept : !kept && dk.location === q.location) && q.notes === "Page edit before closing",
-            JSON.stringify([q.location, dk.location, q.notes]),
-          );
-          ok(`R3 (${label}) no errors`, !p2.errs.length, p2.errs.join("|"));
-        } finally {
-          fs.writeFileSync(path.join(TREE, "board_data.js"), boardText);
-        }
-        await ctx.close();
-      }
-      /* browser storage full: the copy is kept without its merge history (this was "bases"), nothing breaks */
-      const ctx = await b.newContext();
-      const p = await mkpage(ctx, {
-        connect: true,
-        init: `(() => { const set = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) {
-          if (window.__full && String(v).includes('"_hist"')) throw new DOMException("full", "QuotaExceededError");
-          return set.call(this, k, v); }; })();`,
-      });
-      await wait(p, 1500);
-      await p.evaluate(() => (window.__full = 1));
-      await p.evaluate(() => upd("jobs", "harborlight", { notes: "Storage is full" }));
-      await wait(p, 1200);
-      const ls = await p.evaluate(() => JSON.parse(localStorage.getItem(lsKey("board"))));
-      ok(
-        "R3 with browser storage full, the copy is kept without its merge history and saving goes on",
-        ls.jobs.harborlight.notes === "Storage is full" &&
-          !ls._hist &&
-          (await p.evaluate(() => localOk)) === true &&
-          (await disk(p)).jobs.harborlight.notes === "Storage is full",
-      );
-      ok("R3 storage full no errors", !p.errs.length, p.errs.join("|"));
-      await ctx.close();
-    }
-    // ---- R4: two tabs with saving off: a tab that loaded an older file doesn't undo an assistant edit
-    if (want("R4")) {
-      const ctx = await b.newContext();
-      try {
-        const A = await mkpage(ctx, {});
-        const d = parseBoard(boardText);
-        d.jobs.quillstone = {
-          ...d.jobs.quillstone,
-          location: "Remote (assistant)",
-          updatedAt: new Date(Date.now() - 60000).toISOString(),
-          changedBy: "assistant",
-        };
-        const f1 = withData(d);
-        fs.writeFileSync(path.join(TREE, "board_data.js"), f1);
-        const B = await mkpage(ctx, { text: f1 });
-        await A.evaluate(() => upd("jobs", "quillstone", { notes: "typed in tab A" }));
-        await wait(B, 500);
-        const qb = await B.evaluate(() => get("jobs", "quillstone"));
-        ok(
-          "R4 the other tab merges tab A's edit field by field (keeps the assistant's location)",
-          qb.location === "Remote (assistant)" && qb.notes === "typed in tab A",
-          JSON.stringify([qb.location, qb.notes]),
-        );
-        await B.evaluate(() => upd("jobs", "harborlight", { notes: "typed in tab B" }));
-        await wait(B, 300);
-        await A.close();
-        await B.close();
-        const C = await mkpage(ctx, { text: f1 });
-        const r = await C.evaluate(() => [
-          get("jobs", "quillstone").location,
-          get("jobs", "quillstone").notes,
-          get("jobs", "harborlight").notes,
-        ]);
-        ok(
-          "R4 after a reload all three changes are there",
-          r.join("|") === "Remote (assistant)|typed in tab A|typed in tab B",
-          r.join("|"),
-        );
-        ok("R4 no errors", !C.errs.length, C.errs.join("|"));
-      } finally {
-        fs.writeFileSync(path.join(TREE, "board_data.js"), boardText);
-      }
       await ctx.close();
     }
     // ---- R5: a repeated question keeps its answers when other copies are removed or reordered
@@ -358,7 +164,7 @@ const Q90 = "What does success look like in 90 days?";
       ok("R5 plain key no errors", !p2.errs.length, p2.errs.join("|"));
       await ctx2.close();
     }
-    // ---- R6: an answer deleted from My_answers.md (by hand, or by Remove in another tab) stays deleted
+    // ---- R6: an answer removed in the page stays deleted in every tab; one deleted from the file by hand is written back
     if (want("R6")) {
       const K_OLD = "prep:lumenfield::Old question that was reworded";
       const MD = `# My answers\nx\n\n## ${K_OLD}\nOld answer: team of 6\n\n## cheat-sheet::Tell me about yourself\nPitch.\n`;
@@ -410,9 +216,12 @@ const Q90 = "What does success look like in 90 days?";
         await p.fill(REPORT, "Dana");
         await wait(p, 1800);
         const t = await answers(p);
-        ok("R6 an answer deleted from the file by hand stays deleted", !/Pitch\./.test(t) && /Dana/.test(t));
+        ok(
+          "R6 an answer deleted from the file by hand is written back (use Remove)",
+          /Pitch\./.test(t) && /Dana/.test(t),
+        );
         await p.close();
-        /* deleted by hand while the page was closed: after a reload, the copy kept in this browser doesn't bring it back */
+        /* deleted by hand while the page was closed: after a reload, the copy kept in this browser writes it back */
         const t1 = t.replace(/## prep:lumenfield::Who would I report to[^\n]*\nDana\n/, "");
         const p2 = await mkpage(ctx, {
           init: "window.ORGANIZER_FOLDER = window.__pick;",
@@ -423,8 +232,8 @@ const Q90 = "What does success look like in 90 days?";
         await wait(p2, 1800);
         const t2 = await answers(p2);
         ok(
-          "R6 an answer deleted by hand while the page was closed stays deleted after a reload",
-          t1 !== t && !/\nDana\n/.test(t2) && /One more/.test(t2),
+          "R6 an answer deleted by hand while the page was closed is written back after a reload",
+          t1 !== t && /\nDana\n/.test(t2) && /One more/.test(t2),
           t2.slice(-200),
         );
         ok("R6 by hand no errors", !p.errs.length && !p2.errs.length, p.errs.concat(p2.errs).join("|"));

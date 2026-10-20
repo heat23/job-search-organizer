@@ -5,7 +5,7 @@
 //   ONLY=M1,M4 node tests/test_round3.js   runs only those blocks (SAMPLE_TREE must be set, see run.mjs)
 const fs = require("fs");
 const path = require("path");
-const { ok, wait, launch, mkpage, report, data, boardText, parseBoard, files, TREE } = require("./lib.js");
+const { ok, wait, launch, mkpage, report, data, boardText, parseBoard, files, TREE, withRevs } = require("./lib.js");
 
 const ONLY = (process.env.ONLY || "").split(",").filter(Boolean);
 const want = (k) => !ONLY.length || ONLY.includes(k);
@@ -15,16 +15,22 @@ const focus = async (p, extra = 200) => {
   await p.evaluate(() => (typeof focusRun !== "undefined" && focusRun) || new Promise((r) => setTimeout(r, 1500)));
   await wait(p, extra);
 };
-const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n";
+const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(withRevs(d), null, 1) + ";\n";
 const copy = () => JSON.parse(JSON.stringify(data));
 const disk = async (p) => parseBoard(await p.evaluate(() => window.__get("board_data.js")));
-/* an assistant edits one record in board_data.js on disk; `ms` is its updatedAt relative to now */
+/* an assistant edits one record in board_data.js on disk (rev + 1); `ms` is its updatedAt relative to now (only shown) */
 async function assistantEdit(p, coll, id, patch, ms = 2000) {
   await p.evaluate(
     ([c, i, pt, off]) =>
       window.__get("board_data.js").then((t) => {
         const d = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
-        d[c][i] = { ...d[c][i], ...pt, updatedAt: new Date(Date.now() + off).toISOString(), changedBy: "assistant" };
+        d[c][i] = {
+          ...d[c][i],
+          ...pt,
+          rev: (d[c][i].rev || 0) + 1,
+          updatedAt: new Date(Date.now() + off).toISOString(),
+          changedBy: "assistant",
+        };
         window.__put("board_data.js", t.slice(0, t.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n");
       }),
     [coll, id, patch, ms],
@@ -321,6 +327,7 @@ const REPORT = 'details.mine.ask[data-k^="prep:lumenfield::Who would I report to
             d.jobs[i] = {
               ...d.jobs[i],
               ...t,
+              rev: (d.jobs[i].rev || 0) + 1,
               updatedAt: new Date(Date.now() + off).toISOString(),
               changedBy: "assistant",
             };
@@ -337,36 +344,39 @@ const REPORT = 'details.mine.ask[data-k^="prep:lumenfield::Who would I report to
       await race("quillstone", { notes: "You: called the recruiter." }, { location: "Remote (assistant)" }, 2000);
       let r = await both("quillstone");
       ok(
-        "M4 the assistant changes one field while you change another: both survive (assistant newer)",
+        "M4 the assistant changes one field while you change another: both survive",
         r.st.notes === "You: called the recruiter." &&
           r.st.location === "Remote (assistant)" &&
           r.dk.notes === r.st.notes &&
           r.dk.location === r.st.location,
         JSON.stringify({ st: [r.st.notes, r.st.location], dk: [r.dk.notes, r.dk.location] }),
       );
-      await race("orchardline", { notes: "You: sent the form." }, { pay: "$200k (assistant)" }, -1000);
+      /* the assistant's clock is irrelevant: an updatedAt an hour behind changes nothing */
+      await race("orchardline", { notes: "You: sent the form." }, { pay: "$200k (assistant)" }, -3600e3);
       r = await both("orchardline");
       ok(
-        "M4 the same with your edit newer: both survive",
+        "M4 the same with the assistant's updatedAt an hour behind: both survive",
         r.st.notes === "You: sent the form." &&
           r.st.pay === "$200k (assistant)" &&
           r.dk.notes === r.st.notes &&
           r.dk.pay === r.st.pay,
         JSON.stringify({ st: [r.st.notes, r.st.pay], dk: [r.dk.notes, r.dk.pay] }),
       );
-      await race("fernhill", { notes: "Yours" }, { notes: "Theirs (newer)" }, 2000);
-      r = await both("fernhill");
+      for (const off of [3600e3, -3600e3]) {
+        await race("fernhill", { notes: "Yours " + off }, { notes: "Theirs " + off }, off);
+        r = await both("fernhill");
+        ok(
+          `M4 both change the same field (assistant's updatedAt ${off > 0 ? "ahead" : "behind"}): your value is kept`,
+          r.st.notes === "Yours " + off && r.dk.notes === "Yours " + off,
+          r.st.notes + " / " + r.dk.notes,
+        );
+      }
       ok(
-        "M4 both change the same field: the newer edit wins (the assistant's)",
-        r.st.notes === "Theirs (newer)" && r.dk.notes === "Theirs (newer)",
-        r.st.notes + " / " + r.dk.notes,
-      );
-      await race("fernhill", { notes: "Yours (newer)" }, { notes: "Theirs (older)" }, -1000);
-      r = await both("fernhill");
-      ok(
-        "M4 both change the same field: the newer edit wins (yours)",
-        r.st.notes === "Yours (newer)" && r.dk.notes === "Yours (newer)",
-        r.st.notes + " / " + r.dk.notes,
+        "M4 and the conflict is recorded: the file's version in backups/ and a status line",
+        /Kept your version of 1 card; the file's version is saved in backups\/board_data_kept_/.test(
+          await p.$eval("#status", (n) => n.textContent),
+        ) && (await p.evaluate(() => (window.__ls("backups") || []).some((n) => /^board_data_kept_/.test(n)))),
+        await p.$eval("#status", (n) => n.textContent),
       );
       await race(
         "brightwell_search",
@@ -416,6 +426,7 @@ const REPORT = 'details.mine.ask[data-k^="prep:lumenfield::Who would I report to
       d.jobs.quillstone = {
         ...d.jobs.quillstone,
         location: "Remote (assistant, while closed)",
+        rev: d.jobs.quillstone.rev + 1,
         updatedAt: new Date(Date.now() + 5000).toISOString(),
         changedBy: "assistant",
       };

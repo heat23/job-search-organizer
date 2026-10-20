@@ -2,10 +2,10 @@
 // the changes up when you switch back to it (the window's focus event), tags them, files job folders, and loses nothing.
 const fs = require("fs");
 const path = require("path");
-const { ok, wait, launch, mkpage, report, data, boardText, parseBoard, TREE } = require("./lib.js");
+const { ok, wait, launch, mkpage, report, data, boardText, parseBoard, TREE, withRevs } = require("./lib.js");
 
 const now = () => new Date().toISOString();
-const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n";
+const withData = (d) => boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(withRevs(d), null, 1) + ";\n";
 const focus = async (p) => {
   await p.evaluate(() => window.dispatchEvent(new Event("focus")));
   await wait(p, 1500);

@@ -1,5 +1,5 @@
 // Data-file compatibility, working without folder permission, filing folders by stage, keys, drag and drop.
-const { ok, wait, esc2, launch, mkpage, report, data, boardText, parseBoard } = require("./lib.js");
+const { ok, wait, esc2, launch, mkpage, report, data, boardText, parseBoard, withRevs } = require("./lib.js");
 const JOB = "lumenfield",
   JOB2 = "harborlight";
 (async () => {
@@ -19,7 +19,7 @@ const JOB = "lumenfield",
         updatedAt: new Date().toISOString(),
         changedBy: "assistant",
       });
-      const txt = boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(d, null, 1) + ";\n";
+      const txt = boardText.slice(0, boardText.indexOf("{")) + JSON.stringify(withRevs(d), null, 1) + ";\n";
       const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
       const p = await mkpage(ctx, { text: txt, connect: true });
       await p.evaluate(() => moveCard("jobs", "tidewater", "interview"));
