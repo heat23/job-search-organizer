@@ -32,6 +32,13 @@ function persistLocal(force) {
   if (text === lastLocal && !(force && lsGet("board", "") !== text)) return localOk;
   localOk = lsSet("board", text);
   lastLocal = localOk ? text : "";
+  /* A stored copy that can't be replaced (browser storage full) goes out of date, and its dirty fields would come back
+     over newer saved values at the next load. With saving to the folder on, the file holds the changes: remove it (the
+     status line says the browser isn't keeping a copy). Without the folder it is the only copy, so it stays. */
+  if (!localOk && dirHandle && canWrite)
+    try {
+      localStorage.removeItem(lsKey("board"));
+    } catch (e) {}
   return localOk;
 }
 let gen = 0;
@@ -72,6 +79,8 @@ async function readFileInto() {
     extras = Object.create(null);
     keepExtras(raw);
     rec = mergeFileIn(n);
+    /* the stored dirty fields are checked against the folder's file once (see "merging" in store.js) */
+    loadedDirty = null;
     persistLocal();
     checkWrapper(t);
     syncedText = t;
@@ -79,7 +88,7 @@ async function readFileInto() {
     return "bad";
   }
   if (pendingRecord) {
-    for (const x of pendingRecord) rec.add(x);
+    for (const k of ["rec", "taken", "stale"]) for (const x of pendingRecord[k]) rec[k].add(x);
     pendingRecord = null;
   }
   await recordMerge(rec, t);
@@ -130,14 +139,26 @@ async function saveBackup(kind, text) {
   }
 }
 const many = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
-/* rec: the set of "c:id\tfield" kept over the file's value */
-async function recordMerge(rec, fileText) {
-  if (!rec.size) return;
+/* m.rec: the set of "c:id\tfield" kept over the file's value; m.taken: the fields taken from the file in the same merge
+   (named too, so the line never reads as though everything was kept); m.stale: the fields this browser's stored copy
+   had an out-of-date change for (the file's value was taken) */
+async function recordMerge(m, fileText) {
+  const { rec, taken, stale } = m;
+  const old = stale.size
+    ? `This browser's stored copy was out of date: took the file's newer value of ${many(stale.size, "field")}.`
+    : "";
+  if (!rec.size) {
+    if (old) setNote(old);
+    return;
+  }
   const cardsN = new Set([...rec].map((x) => x.split("\t")[0])).size;
   const name = await saveBackup("kept", fileText);
   setNote(
-    `Kept your version of ${many(rec.size, "field")} on ${many(cardsN, "card")}; ` +
-      (name ? `the file's version is in backups/${name}.` : "the file's version wasn't saved (no folder access)."),
+    `Kept your version of ${many(rec.size, "field")} on ${many(cardsN, "card")}` +
+      (taken.size ? `; took ${many(taken.size, "change")} from the file` : "") +
+      "; " +
+      (name ? `the file's version is in backups/${name}.` : "the file's version wasn't saved (no folder access).") +
+      (old ? " " + old : ""),
   );
 }
 let wrapperWarned = "";
@@ -186,10 +207,16 @@ async function writeFile() {
       const text = serialize(snap);
       await w.write(text);
       await w.close();
+      /* The file holds the snapshot now: its dirty fields are clean, in memory and in the stored copy, before anything
+         else can wait (a page closed after this point never leaves a stored dirty flag for a change already written). */
       syncedText = text;
-      lastMeta = metaOf(await fh.getFile());
       cleanWritten(snap, snapDirty);
       persistLocal();
+      try {
+        lastMeta = metaOf(await fh.getFile());
+      } catch (e) {
+        lastMeta = "";
+      }
       lastSaved = new Date();
       saveErr = "";
       if (gen === g && collectionsOnly(store) === collectionsOnly(snap)) dirty = false;
@@ -682,6 +709,14 @@ function renderStatus() {
     s.append(dot(), "Demo: changes stay in this tab");
     return;
   }
+  /* saving to the folder works, but this browser can't keep its own copy (storage full): say so */
+  const noLocal = !localOk
+    ? el("span", {
+        class: "snote",
+        text: "This browser can't keep its backup copy of the board (browser storage is full); saving to your folder still works.",
+      })
+    : "";
+  if (noLocal) s.classList.replace("ok", "warn");
   s.append(
     dot(),
     dirty
@@ -689,6 +724,7 @@ function renderStatus() {
       : lastSaved
         ? `Saved to your folder at ${lastSaved.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
         : "Saving to your folder",
+    noLocal,
     extra(),
   );
 }

@@ -91,15 +91,23 @@ function normalize(src) {
      written back with revs + 1; from another tab it is the later copy).
    - an unsynced change is never lost: when the winning value isn't dirty and the losing one is, the dirty value stays,
      with revs = the higher of the two + 1, so it wins everywhere once written.
+   - except a dirty flag stored with this browser's copy as the page loads: the copy can be out of date (the page closed
+     after writing the file but before clearing the flag, or browser storage stopped taking new copies). Until the
+     first read of the data file, such a field whose revision the file has reached (equal or higher) with a different
+     value takes the file's value: the file already holds that change or a newer one. Only a stored dirty field with a
+     revision above the file's (a change never written) wins.
    - deleted and removedAt are fields like any other. A record only one side has is kept.
    Against the file, a value of yours kept over a different file value is recorded when the file's revision is as high as
    yours or higher (you and another tool changed the same field), or lower while yours isn't dirty (an older copy was
    written back). "Recorded" means the file as it was goes to backups/ and the status line says so, one line per merge
    (recordMerge in storage.js). */
-const MAXREV = 1e12;
+/* the highest revision kept: whole numbers stay exact up to here, so even a tool that writes a timestamp in milliseconds
+   as a revision leaves room for every later + 1 */
+const MAXREV = Number.MAX_SAFE_INTEGER;
 const META = new Set(["revs", "updatedAt", "changedBy"]);
 const rv = (r, f) => (r && r.revs && Object.hasOwn(r.revs, f) ? r.revs[f] : 0);
-/* revs as kept: whole numbers from 1 up (a number written as text is read as that number); anything else counts as 0 */
+/* revs as kept: whole numbers from 1 up (a number written as text is read as that number), capped at MAXREV; anything
+   else counts as 0 */
 function cleanRevs(v) {
   const out = {};
   if (!v || typeof v !== "object" || Array.isArray(v)) return out;
@@ -167,25 +175,33 @@ const copyDirty = (m) => Object.fromEntries(Object.entries(m).map(([k, d]) => [k
 function markDirty(k, f) {
   (dirtyF[k] = dirtyF[k] || {})[f] = 1;
 }
-/* R merged into L (see the rule above). Ld and Rd: their dirty fields; file: R is the data file. Returns the record, its
-   dirty fields (or null) and the fields to record. */
-function mergeRec(L, Ld, R, Rd, file) {
-  if (!L) return { rec: R, dirty: Rd || null, kept: [] };
+/* R merged into L (see the rule above). Ld and Rd: their dirty fields; file: R is the data file; Ls: {field: rev} of
+   L's dirty fields as stored when the page loaded (see loadedDirty). Returns the record, its dirty fields (or null), the
+   fields to record, the fields taken from R and the stored dirty fields found out of date. */
+function mergeRec(L, Ld, R, Rd, file, Ls) {
+  if (!L) return { rec: R, dirty: Rd || null, kept: [], taken: [], stale: [] };
   if (sameRec(L, R)) {
     const d = {};
     if (Ld && Rd) for (const f of Object.keys(Ld)) if (Rd[f]) d[f] = 1;
-    return { rec: L, dirty: Object.keys(d).length ? d : null, kept: [] };
+    return { rec: L, dirty: Object.keys(d).length ? d : null, kept: [], taken: [], stale: [] };
   }
   const out = { ...L },
     revs = { ...(L.revs || {}) },
     dirty = {},
-    kept = [];
+    kept = [],
+    taken = [],
+    stale = [];
   let took = false;
   for (const f of fieldsOf(L, R)) {
     const lr = rv(L, f),
       rr = rv(R, f),
-      ld = !!(Ld && Ld[f]),
       rd = !!(Rd && Rd[f]);
+    let ld = !!(Ld && Ld[f]);
+    /* a dirty flag from the stored copy, on a value unchanged since the load, that the file has caught up with: stale */
+    if (ld && file && Ls && Object.hasOwn(Ls, f) && Ls[f] === lr && rr >= lr && !eqv(L[f], R[f])) {
+      ld = false;
+      stale.push(f);
+    }
     let fromR = false,
       n,
       d;
@@ -212,6 +228,7 @@ function mergeRec(L, Ld, R, Rd, file) {
       if (R[f] === undefined) delete out[f];
       else out[f] = R[f];
       took = true;
+      taken.push(f);
     }
     if (n) revs[f] = Math.min(MAXREV, n);
     else delete revs[f];
@@ -225,23 +242,28 @@ function mergeRec(L, Ld, R, Rd, file) {
   else delete out.revs;
   const D = Object.keys(dirty).length ? dirty : null;
   /* nothing taken: your stamps stay (a copy only re-stamped changes nothing) */
-  return { rec: took && sameContent(out, R) ? R : sameRec(out, L) ? L : out, dirty: D, kept };
+  return { rec: took && sameContent(out, R) ? R : sameRec(out, L) ? L : out, dirty: D, kept, taken, stale };
 }
 /* The copy `n` (normalized; nd: its dirty fields, null for the data file) merged into a copy of `st` (sd: its dirty
-   fields). Returns the merged copy, its dirty fields and the set of "c:id\tfield" to record (file merges only). */
-function mergeStores(st, sd, n, nd, file) {
+   fields; ls: the stored dirty revisions still to check, see loadedDirty). Returns the merged copy, its dirty fields and
+   the sets of "c:id\tfield" to record (file merges only), taken from `n`, and found stale. */
+function mergeStores(st, sd, n, nd, file, ls) {
   const next = copyStore(st),
     dirty = Object.create(null),
-    rec = new Set();
+    rec = new Set(),
+    taken = new Set(),
+    stale = new Set();
   for (const k of Object.keys(sd)) dirty[k] = sd[k];
   for (const c of COLLS) {
     for (const id of Object.keys(n[c])) {
       const k = c + ":" + id;
-      const m = mergeRec(hasRec(next, c, id) ? next[c][id] : null, sd[k], n[c][id], nd && nd[k], file);
+      const m = mergeRec(hasRec(next, c, id) ? next[c][id] : null, sd[k], n[c][id], nd && nd[k], file, ls && ls[k]);
       next[c][id] = m.rec;
       if (m.dirty) dirty[k] = m.dirty;
       else delete dirty[k];
       for (const f of m.kept) rec.add(k + "\t" + f);
+      for (const f of m.taken) taken.add(k + "\t" + f);
+      for (const f of m.stale) stale.add(k + "\t" + f);
     }
     /* a record the file lost (removing is deleted:true) is kept and written back; recorded unless it was never written */
     if (file)
@@ -253,7 +275,7 @@ function mergeStores(st, sd, n, nd, file) {
           if (fs.some((f) => !d[f])) for (const f of fs) rec.add(k + "\t" + f);
         }
   }
-  return { store: next, dirty, rec };
+  return { store: next, dirty, rec, taken, stale };
 }
 /* After a successful write of `snap`: the fields that were dirty in it (sd) are clean, unless they changed since. */
 function cleanWritten(snap, sd) {
@@ -360,25 +382,35 @@ try {
 /* this browser's copy merged with the file as the page loaded it */
 let store = copyStore(localCopy || emptyStore());
 dirtyF = dirtyIn(saved._dirty);
+/* "c:id" -> {field: rev}: the dirty fields stored with this browser's copy and their revisions, checked against the data
+   file until its first read from the folder (see the rule above) */
+let loadedDirty = Object.create(null);
+for (const k of Object.keys(dirtyF)) {
+  const [c, id] = splitKey(k);
+  if (!hasRec(store, c, id)) continue;
+  loadedDirty[k] = {};
+  for (const f of Object.keys(dirtyF[k])) loadedDirty[k][f] = rv(store[c][id], f);
+}
 /* a copy stored by a version before per-field revisions (it has no _dirty): merged by that version's rule, once, at
    the first read of the data file (see legacyMerge) */
 let legacyLocal = !!localCopy && (!Object.hasOwn(saved, "_dirty") || saved._legacy === 1);
-/* The data file's records `n` (normalized) merged into this browser's copy; returns what to record. */
+/* The data file's records `n` (normalized) merged into this browser's copy; returns {rec, taken, stale} (see
+   mergeStores) for recordMerge. */
 function mergeFileIn(n) {
   if (legacyLocal) {
     legacyMerge(store, n);
     legacyLocal = false;
   }
-  const m = mergeStores(store, dirtyF, n, null, true);
+  const m = mergeStores(store, dirtyF, n, null, true, loadedDirty);
   store = m.store;
   dirtyF = m.dirty;
-  return m.rec;
+  return { rec: m.rec, taken: m.taken, stale: m.stale };
 }
 /* what that first merge recorded: written to backups/ and shown once saving to the folder is on (see recordMerge) */
 let pendingRecord = null;
 if (fileCopy) {
-  const rec = mergeFileIn(fileCopy);
-  if (rec.size) pendingRecord = rec;
+  const m = mergeFileIn(fileCopy);
+  if (m.rec.size || m.stale.size) pendingRecord = m;
 }
 /* the cards with a change that isn't in the data file yet */
 function unsyncedCount() {

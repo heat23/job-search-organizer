@@ -40,7 +40,7 @@ const A = (r, patch, bump = true, at = new Date().toISOString()) => {
 };
 const withText = (d) => textOf(boardText, d);
 const KEPT =
-  /Kept your version of (\d+) fields? on (\d+) cards?; the file's version is in backups\/board_data_kept_\d{4}-\d{2}-\d{2}_\d{4,6}\.js\./;
+  /Kept your version of (\d+) fields? on (\d+) cards?(?:; took \d+ changes? from the file)?; the file's version is in backups\/board_data_kept_\d{4}-\d{2}-\d{2}_\d{4,6}\.js\./;
 /* as in real use, the <script src="board_data.js"> tag loads the same file the folder holds */
 const SCRIPT = (t) =>
   `Object.defineProperty(window,"BOARD_DATA",{get:()=>(${JSON.stringify(parseBoard(t))}),set:()=>{},configurable:true});`;
@@ -1475,6 +1475,7 @@ const folderInit = (t) => "window.ORGANIZER_FOLDER = window.__pick;" + SCRIPT(t)
       }
     }
     // ---- V19: odd revision values from a tool (advG LOW-2): text numbers count, anything else is 0, huge ones are capped
+    //      (at Number.MAX_SAFE_INTEGER, where whole numbers stay exact)
     if (want("V19")) {
       const { ctx, p } = await open();
       const r = await p.evaluate(() =>
@@ -1491,7 +1492,7 @@ const folderInit = (t) => "window.ORGANIZER_FOLDER = window.__pick;" + SCRIPT(t)
       );
       ok(
         "V19 revs are cleaned: whole numbers from 1 up, capped",
-        r.join("|") === '{"location":2}|null|null|null|{"location":2}|{"location":1000000000000}|null|null',
+        r.join("|") === '{"location":2}|null|null|null|{"location":2}|{"location":9007199254740991}|null|null',
         r.join("|"),
       );
       await write(
@@ -1508,6 +1509,207 @@ const folderInit = (t) => "window.ORGANIZER_FOLDER = window.__pick;" + SCRIPT(t)
         (await disk(p)).jobs.fernhill.location === "Remote (asst)",
       );
       ok("V19 no errors", !p.errs.length, p.errs.join("|"));
+      await ctx.close();
+    }
+    // ---- V20: browser storage full while saving to the folder is on (advH HIGH-1): the stored copy that can't be
+    //      replaced is removed, so its dirty fields never come back over later saved values; the status line says so
+    if (want("V20")) {
+      const FULL = `(() => { const set = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) {
+        if (localStorage.getItem("__full") === "1" && /:board$/.test(k)) throw new DOMException("full", "QuotaExceededError");
+        return set.call(this, k, v); }; })();`;
+      const ctx = await b.newContext();
+      let p = await mkpage(ctx, { connect: true, init: FULL });
+      await wait(p, 1500);
+      /* the first edit is stored with its dirty flag; from then on browser storage takes nothing */
+      await p.evaluate(() => {
+        upd("jobs", "fernhill", { notes: "N1 (first edit)" });
+        localStorage.setItem("__full", "1");
+      });
+      await wait(p, 1200);
+      await p.evaluate(() => upd("jobs", "fernhill", { notes: "N2 (latest, saved)" }));
+      await wait(p, 1200);
+      const t = await raw(p);
+      ok(
+        "V20 with storage full the later edit is saved to the file",
+        parseBoard(t).jobs.fernhill.notes === "N2 (latest, saved)",
+      );
+      ok(
+        "V20 the out-of-date stored copy (with its dirty flag) is removed",
+        (await p.evaluate(() => localStorage.getItem(lsKey("board")))) === null,
+      );
+      ok(
+        "V20 the status line says the browser isn't keeping its copy, and that saving to the folder works",
+        /can't keep its backup copy.*saving to your folder still works/.test(await status(p)),
+        await status(p),
+      );
+      ok("V20 no errors", !p.errs.length, p.errs.join("|"));
+      await p.close();
+      p = await mkpage(ctx, { text: t, init: FULL + folderInit(t) });
+      await wait(p, 2000);
+      ok(
+        "V20 reopened: the latest saved value stays (page and file)",
+        (await p.evaluate(() => store.jobs.fernhill.notes)) === "N2 (latest, saved)" &&
+          (await disk(p)).jobs.fernhill.notes === "N2 (latest, saved)",
+      );
+      ok("V20 reopened no errors", !p.errs.length, p.errs.join("|"));
+      await ctx.close();
+    }
+    // ---- V21: once the file is written, its dirty fields are cleared in the stored copy before anything else can wait
+    //      (advH HIGH-1): a page closed after that point, or a check of the file that fails, leaves no stale flag
+    if (want("V21")) {
+      const BREAK = `(() => { const MF = window.MemFS.MemFile, cw = MF.prototype.createWritable;
+        MF.prototype.createWritable = async function () {
+          const w = await cw.call(this), f = this, close = w.close;
+          w.close = async () => {
+            await close();
+            if (!window.__breakAfterClose || f.name !== "board_data.js") return;
+            window.__breakAfterClose = 0;
+            const g = f.getFile;
+            f.getFile = async () => {
+              f.getFile = g;
+              window.__storedAtNext = localStorage.getItem(lsKey("board"));
+              throw new DOMException("gone", "NotReadableError");
+            };
+          };
+          return w;
+        }; })();`;
+      const { ctx, p } = await open({ init: BREAK });
+      await p.evaluate(() => {
+        window.__breakAfterClose = 1;
+        upd("jobs", "fernhill", { notes: "Written, then the page stops" });
+      });
+      await wait(p, 1500);
+      const r = await p.evaluate(() => {
+        const j = JSON.parse(window.__storedAtNext || "null");
+        return {
+          stored: !!j && j.jobs.fernhill.notes === "Written, then the page stops" && !(j._dirty || {})["jobs:fernhill"],
+          dirty: !!dirtyF["jobs:fernhill"],
+          err: saveErr,
+        };
+      });
+      ok(
+        "V21 the stored copy is clean before the page's next step after the write",
+        r.stored && (await disk(p)).jobs.fernhill.notes === "Written, then the page stops",
+        JSON.stringify(r),
+      );
+      ok(
+        "V21 a check of the file that fails after a good write isn't a failed save",
+        !r.dirty && !r.err,
+        JSON.stringify(r),
+      );
+      ok("V21 no errors", !p.errs.length, p.errs.join("|"));
+      await ctx.close();
+    }
+    // ---- V22: a stored copy whose dirty flag is out of date (advH HIGH-1, h2): at load, a stored dirty field whose
+    //      revision the file has reached (equal or higher) takes the file's value; only a higher revision wins
+    if (want("V22")) {
+      for (const [label, mine, theirs, keepMine] of [
+        ["lower", 1, 2, false],
+        ["equal", 2, 2, false],
+        ["higher", 3, 2, true],
+      ]) {
+        const ctx = await b.newContext();
+        try {
+          const d = parseBoard(boardText);
+          d.jobs.fernhill = { ...d.jobs.fernhill, notes: "SAVED IN THE FILE", revs: { notes: theirs } };
+          const text = withText(d);
+          fs.writeFileSync(path.join(TREE, "board_data.js"), text);
+          const st = parseBoard(text);
+          delete st.version;
+          delete st.savedAt;
+          st.jobs.fernhill = { ...st.jobs.fernhill, notes: "STORED, DIRTY", revs: { notes: mine } };
+          st._dirty = { "jobs:fernhill": ["notes"] };
+          const p0 = await mkpage(ctx, { text });
+          const key = await p0.evaluate(() => lsKey("board"));
+          await p0.close();
+          const p = await mkpage(ctx, {
+            text,
+            init:
+              `if (!sessionStorage.getItem("seeded")) { sessionStorage.setItem("seeded", "1"); localStorage.clear();
+              localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(JSON.stringify(st))}); }` +
+              folderInit(text),
+          });
+          await wait(p, 2000);
+          const want3 = keepMine ? "STORED, DIRTY" : "SAVED IN THE FILE";
+          const f = (await disk(p)).jobs.fernhill;
+          const s = await status(p);
+          ok(
+            `V22 (stored revision ${label}) ${keepMine ? "the unsynced change wins and is written" : "the file's saved value stays"} (page and file)`,
+            (await p.evaluate(() => store.jobs.fernhill.notes)) === want3 &&
+              f.notes === want3 &&
+              (!keepMine || rv(f, "notes") === mine),
+            JSON.stringify([f.notes, f.revs, s]),
+          );
+          ok(
+            `V22 (${label}) the status line ${keepMine ? "records nothing" : "says the stored copy was out of date"}`,
+            keepMine
+              ? !/Kept your version|out of date/.test(s)
+              : /stored copy was out of date: took the file's newer value of 1 field\./.test(s) &&
+                  !/Kept your version/.test(s),
+            s,
+          );
+          ok(
+            `V22 (${label}) nothing left dirty`,
+            await p.evaluate(
+              () =>
+                !Object.keys(dirtyF).length &&
+                !JSON.parse(localStorage.getItem(lsKey("board")))._dirty["jobs:fernhill"],
+            ),
+          );
+          ok(`V22 (${label}) no errors`, !p.errs.length, p.errs.join("|"));
+        } finally {
+          fs.writeFileSync(path.join(TREE, "board_data.js"), boardText);
+        }
+        await ctx.close();
+      }
+    }
+    // ---- V23: a tool that writes a timestamp as a revision (advH MEDIUM-1): later edits still go one above it, so an
+    //      older copy written back is kept out; the status line names what was taken too (advH LOW-1)
+    if (want("V23")) {
+      const { ctx, p } = await open();
+      const R = Date.now();
+      await write(
+        p,
+        (d) =>
+          (d.jobs.fernhill = {
+            ...A(d.jobs.fernhill, { notes: "assistant note" }, false),
+            revs: { ...(d.jobs.fernhill.revs || {}), notes: R },
+          }),
+      );
+      await focus(p, 1500);
+      const t0 = await raw(p);
+      await p.evaluate(() => upd("jobs", "fernhill", { notes: "PERSON NOTE (saved)" }));
+      await wait(p, 1200);
+      ok(
+        "V23 the person's edit goes one above the timestamp revision",
+        rv((await disk(p)).jobs.fernhill, "notes") === R + 1,
+      );
+      await p.evaluate(() => setNote(""));
+      await write(
+        p,
+        (d) =>
+          (d.jobs.fernhill = {
+            ...A(d.jobs.fernhill, { location: "Remote (asst)" }, false),
+            revs: { ...d.jobs.fernhill.revs, location: R + 1 },
+          }),
+        t0,
+      );
+      await focus(p, 1500);
+      const f = (await disk(p)).jobs.fernhill;
+      ok(
+        "V23 an older copy written back keeps out of the saved note; its own edit is taken (page and file)",
+        f.notes === "PERSON NOTE (saved)" &&
+          f.location === "Remote (asst)" &&
+          (await p.evaluate(() => store.jobs.fernhill.notes)) === "PERSON NOTE (saved)",
+        JSON.stringify([f.notes, f.location, f.revs]),
+      );
+      const s = await status(p);
+      ok(
+        "V23 the status line names what was kept and what was taken",
+        KEPT.test(s) && /Kept your version of 1 field on 1 card; took 1 change from the file;/.test(s),
+        s,
+      );
+      ok("V23 no errors", !p.errs.length, p.errs.join("|"));
       await ctx.close();
     }
   } catch (e) {
