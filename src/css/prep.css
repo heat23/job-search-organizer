@@ -927,6 +927,20 @@ a.hit span {
 .pleft.cuesonly .hq.open h4::after {
   content: "  ▾";
 }
+/* saved answers from an earlier version of the sheet always show their text */
+.pleft.cuesonly .hq.earlier blockquote.say {
+  display: block;
+}
+.pleft.cuesonly .hq.earlier h4::after {
+  content: none;
+}
+.hq.earlier .eacts {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
 /* a "Their answer" question with no answer of yours has nothing to show */
 .pleft.cuesonly .hq:has(> details.mine.ask):not(:has(blockquote.say)) h4::after {
   content: none;

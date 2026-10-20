@@ -34,16 +34,18 @@ The scripts are classic scripts joined in file-name order, not ES modules, becau
 
 ## Keeping data safe
 
-- **Two copies, newest wins.** Every change is stored in the browser at once and written to `board_data.js` 400 ms later. On load the two are merged record by record by `updatedAt`, so an edit made by another tool while the page was closed is kept.
+- **Two copies, merged field by field.** Every change is stored in the browser at once and written to `board_data.js` 400 ms later. For each record the page remembers the version the file held at the last read or write. When the file and the browser both changed a record since then, a field only one side changed keeps that side's value and a field both changed takes the newer record's value; without such a base the newer record wins. A removal (`deleted: true`) is a field like any other, so a merge never undoes it. On window focus the data file is read before the prep sheets are scanned.
 - **Never delete.** Removing a card sets `deleted: true`; the Removed list can restore it. A removed job's files wait in `4 - Removed` for 30 days.
-- **Never overwrite unread text.** The notes pad re-reads `my_notes.md` before each write. If the file changed on disk, the other version is saved beside it as `my_notes.changed-on-disk-<time>.md`.
+- **Never overwrite unread text.** The notes pad re-reads `my_notes.md` before each write. If the file changed on disk, the other version is saved beside it as `my_notes.changed-on-disk-<time>.md`. `Library/My_answers.md` is read and merged before every write (every key is kept; a box changed in this browser since the last read wins); if it can't be read, the answers wait in the browser.
+- **Only real job folders move.** A job's `folder` must be a relative path inside the board that isn't a stage folder, `Library`, `Job notes` or `backups`; anything else is refused with a message, and a folder can never be copied into itself. Filing only looks at jobs whose stage or folder changed, with a full pass at start-up and after another tool's changes.
+- **Data files are scripts.** `board_data.js` and `organizer.config.js` are loaded with `<script>` tags. Read from the folder, the data file is only JSON-parsed, and the page warns when anything besides comments surrounds `window.BOARD_DATA = {…};`.
 - **Refuse a broken file.** If `board_data.js` can't be parsed, the page keeps your changes in the browser and doesn't overwrite it.
 - **Per-folder storage.** Browser storage is shared by all pages opened from disk, so every key carries the page's folder: the sample board and your own never mix.
 - **Backups.** A daily copy of the data file (14 kept, taken on the first save of the day or at start-up on a day without edits) and of your notes (60 kept) in `backups/`, plus an optional daily copy of the whole folder somewhere else (5 kept).
 
 ## Tests
 
-`npm test` runs 300 checks in headless Chromium against a copy of `boards/sample`. An in-memory folder (`src/demo/memfs.js`, with test hooks in `tests/ffs.js`) stands in for the folder picker, so the tests cover saving, conflicts, permission loss and write failures without touching the disk.
+`npm test` runs 390 checks in headless Chromium against a copy of `boards/sample`. An in-memory folder (`src/demo/memfs.js`, with test hooks in `tests/ffs.js`) stands in for the folder picker, so the tests cover saving, conflicts, permission loss and write failures without touching the disk.
 
 ## The live demo
 

@@ -137,11 +137,8 @@ function blocks(lines) {
   return h;
 }
 const ASK_RE = /\{\.ask\}/;
-const stripAsk = (t) =>
-  String(t)
-    .replace(/\s*\{\.ask\}\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+/* split/join, not a regex with \s* on both sides: that one takes seconds on a heading with a long run of spaces */
+const stripAsk = (t) => String(t).split("{.ask}").join(" ").replace(/\s+/g, " ").trim();
 /* A doc = optional front matter, "# title", "## sections" (cards), "### questions" (blocks).
    With `split: bold` in the front matter, a whole-line **bold** also starts a question (for long answer docs). */
 function parse(md, opts) {
@@ -208,7 +205,9 @@ const MINE = (k) =>
 const ASKBOX = (k) =>
   `<details class="mine ask" data-k="${esc(k)}" data-label="Their answer" open><summary>Their answer</summary><textarea rows="3" placeholder="Type what they said. It saves to Library › My_answers.md."></textarea></details>`;
 /* opts.mineKey turns on the answer boxes (saved as "<mineKey>::<question>"); opts.ask turns {.ask} questions into
-   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped). */
+   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped). The same question twice in one doc
+   gets its own box: the first keeps the plain key, a later one "<mineKey>::<question> #2" (#3…). The keys of every box
+   are returned in `keys`. */
 function renderDoc(md, prefix, opts) {
   opts = opts || {};
   const d = parse(md, opts);
@@ -219,27 +218,42 @@ function renderDoc(md, prefix, opts) {
     used[s] = 1;
     return s;
   };
+  const keys = [],
+    kseen = {};
+  const keyOf = (t) => {
+    const base = opts.mineKey + "::" + normK(t);
+    kseen[base] = (kseen[base] || 0) + 1;
+    return kseen[base] > 1 ? base + " #" + kseen[base] : base;
+  };
+  const box = (k, ask) => {
+    keys.push(k);
+    return ask ? ASKBOX(k) : MINE(k);
+  };
   let h = d.intro.some((x) => x.trim()) ? `<div class="hintro">${blocks(d.intro)}</div>` : "";
   const nav = [];
-  const hasMine = (t) => !!(opts.mineKey && (/✎/.test(t) || (MY[opts.mineKey + "::" + normK(t)] || "").trim()));
+  const hasMine = (t, k) => !!(opts.mineKey && (/✎/.test(t) || (MY[k] || "").trim()));
   for (const s of d.secs) {
     const id = sid(s.title);
     nav.push({ id, title: s.title, pay: s.pay });
     h += `<section class="hs${s.pay ? " pay" : ""}" id="${id}" data-title="${esc(s.title)}"><h3 class="hs-h"><span>${inline(s.title)}</span>${s.pay ? PAYNOTE() : ""}${COPY}</h3>${blocks(s.pre)}`;
-    if (!s.qs.length && hasMine(s.title)) h += MINE(opts.mineKey + "::" + normK(s.title));
-    for (const qq of s.qs)
-      h += `<div class="hq${qq.sub ? " sub" : ""}${qq.pay ? " pay" : ""}" id="${sid(qq.title)}"><h4><span>${inline(qq.title)}</span>${COPY}</h4>${blocks(qq.lines)}${
-        qq.ask && opts.ask && opts.mineKey
-          ? ASKBOX(opts.mineKey + "::" + normK(qq.title))
-          : hasMine(qq.title)
-            ? MINE(opts.mineKey + "::" + normK(qq.title))
-            : ""
-      }</div>`;
+    if (!s.qs.length && opts.mineKey) {
+      const k = keyOf(s.title);
+      if (hasMine(s.title, k)) h += box(k);
+    }
+    for (const qq of s.qs) {
+      let bx = "";
+      if (opts.mineKey) {
+        const k = keyOf(qq.title);
+        if (qq.ask && opts.ask) bx = box(k, true);
+        else if (hasMine(qq.title, k)) bx = box(k);
+      }
+      h += `<div class="hq${qq.sub ? " sub" : ""}${qq.pay ? " pay" : ""}" id="${sid(qq.title)}"><h4><span>${inline(qq.title)}</span>${COPY}</h4>${blocks(qq.lines)}${bx}</div>`;
+    }
     h += `</section>`;
   }
   if (!d.secs.length && h)
     h = `<section class="hs" id="${prefix}-all" data-title="${esc(d.title || "")}">${h.replace(/^<div class="hintro">|<\/div>$/g, "")}</section>`;
-  return { fm: d.fm, title: d.title, html: h, nav };
+  return { fm: d.fm, title: d.title, html: h, nav, keys };
 }
 /* One "## section" of a guide, found by a heading pattern (used by the headhunter sheet). */
 function sectionHtml(docId, re, id) {
@@ -358,16 +372,17 @@ function wireCopy(root) {
         }, 1100);
       };
       try {
-        navigator.clipboard.writeText(txt).then(done, () => copyFallback(txt, done));
+        navigator.clipboard.writeText(txt).then(done, () => copyFallback(txt, done, b));
       } catch (_) {
-        copyFallback(txt, done);
+        copyFallback(txt, done, b);
       }
       return;
     }
     if ((e.target.closest(".hs.pay") || e.target.closest(".hq.pay")) && payHidden()) showPay(true);
   });
 }
-function copyFallback(t, done) {
+/* `btn` is the Copy button (the temporary text box takes the focus, so it can't be found by focus afterwards) */
+function copyFallback(t, done, btn) {
   const ta = document.createElement("textarea");
   ta.value = t;
   ta.style.position = "fixed";
@@ -381,10 +396,12 @@ function copyFallback(t, done) {
   ta.remove();
   if (ok) done();
   else {
-    const bb = $q(".hcopy.ok,.hcopy:focus");
+    const bb = btn || $q(".hcopy.ok,.hcopy:focus");
     if (bb) {
       const o = bb.textContent;
-      bb.textContent = "Press ⌘C";
+      bb.textContent = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "")
+        ? "Press ⌘C"
+        : "Press Ctrl+C";
       setTimeout(() => (bb.textContent = o), 1800);
     }
   }

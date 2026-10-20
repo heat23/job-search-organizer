@@ -152,6 +152,87 @@ function checkConfig(cfg) {
       console.warn("organizer.config.js: " + m);
     } catch (e) {}
   };
+  /* Every setting has the type of its default: a wrong one (null, a string where a list or an object belongs, a word
+     where a number belongs) falls back to the default with a warning, rather than leaving a blank page. */
+  const kind = (v) => (v === null ? "null" : Array.isArray(v) ? "list" : typeof v);
+  const clone = (v) => (v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v);
+  const NULLABLE = ["demo", "library.hunterScript", "library.hunterPlaybook"];
+  const OWN_CHECK = ["lanes", "callTypes", "stale", "plan.weekNames"];
+  const fix = (obj, dflt, path) => {
+    for (const k of Object.keys(dflt)) {
+      const p = path ? path + "." + k : k;
+      const d = dflt[k],
+        v = obj[k];
+      if (OWN_CHECK.includes(p) || d === null) continue;
+      if (v === undefined) {
+        obj[k] = clone(d);
+        continue;
+      }
+      if (v === null && NULLABLE.includes(p)) continue;
+      if (kind(v) !== kind(d)) {
+        if (kind(d) === "number" && typeof v === "string" && v.trim() && isFinite(+v)) {
+          obj[k] = +v;
+          continue;
+        }
+        warn(`${p} should be ${kind(d) === "object" ? "an object" : "a " + kind(d)}; using the default.`);
+        obj[k] = clone(d);
+      } else if (kind(d) === "object") fix(v, d, p);
+    }
+  };
+  fix(cfg, DEFAULT_CONFIG, "");
+  for (const sec of ["hunters", "people"])
+    for (const f of ["label", "short", "noun"])
+      if (!cfg.sections[sec][f].trim()) {
+        warn(`sections.${sec}.${f} is empty; using the default.`);
+        cfg.sections[sec][f] = DEFAULT_CONFIG.sections[sec][f];
+      }
+  cfg.closedReasons = cfg.closedReasons.filter((r) => typeof r === "string" && r.trim());
+  /* patterns (pillLabels, the headhunter sheet headings) must be valid regular expressions */
+  const reOk = (r) => {
+    try {
+      new RegExp(r);
+      return typeof r === "string";
+    } catch (e) {
+      return false;
+    }
+  };
+  cfg.library.pillLabels = cfg.library.pillLabels.filter((pl) => {
+    const good = Array.isArray(pl) && reOk(pl[0]) && typeof pl[1] === "string";
+    if (!good) warn(`library.pillLabels has an entry that isn't ["pattern", "label"]; it was skipped.`);
+    return good;
+  });
+  for (const k of ["hunterScript", "hunterPlaybook"]) {
+    const h = cfg.library[k];
+    if (h && (typeof h.doc !== "string" || !reOk(h.heading))) {
+      warn(`library.${k} needs a doc and a valid heading pattern; using the default.`);
+      cfg.library[k] = clone(DEFAULT_CONFIG.library[k]);
+    }
+  }
+  /* sheet buttons: a doc id and a label; a key is one character that no built-in shortcut uses */
+  const TAKEN = ["n", "g", "h", "/", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+  const usedKeys = new Set();
+  cfg.library.sheetButtons = cfg.library.sheetButtons
+    .map((b, i) => {
+      if (!b || typeof b !== "object" || typeof b.doc !== "string" || !b.doc.trim()) {
+        warn(`library.sheetButtons entry ${i + 1} has no doc; it was skipped.`);
+        return null;
+      }
+      const out = { ...b, doc: b.doc.trim() };
+      if (typeof out.label !== "string" || !out.label.trim()) {
+        warn(`library.sheetButtons "${out.doc}" has no label; the doc id is used.`);
+        out.label = out.doc;
+      }
+      if (out.key == null || out.key === "") delete out.key;
+      else if (typeof out.key !== "string" || out.key.length !== 1) {
+        warn(`library.sheetButtons "${out.doc}" key should be one character; it has no key now.`);
+        delete out.key;
+      } else if (TAKEN.includes(out.key.toLowerCase()) || usedKeys.has(out.key.toLowerCase())) {
+        warn(`library.sheetButtons "${out.doc}" key "${out.key}" is already taken; it has no key now.`);
+        delete out.key;
+      } else usedKeys.add(out.key.toLowerCase());
+      return out;
+    })
+    .filter(Boolean);
   const lanes = cfg.lanes && typeof cfg.lanes === "object" ? cfg.lanes : {};
   cfg.lanes = { ...lanes };
   for (const sec of Object.keys(DEFAULT_CONFIG.lanes)) {
@@ -167,7 +248,18 @@ function checkConfig(cfg) {
       if (out.some((o) => o.id === l.id)) continue;
       /* a lane you list keeps the default's other settings (color, follow-up days, done) unless you set them */
       const base = dflt.find((d) => d.id === l.id);
-      out.push(base ? { ...base, ...l } : { ...l });
+      const lane = base ? { ...base, ...l } : { ...l };
+      /* follow-up days are a number ("7" works too) */
+      if (lane.follow != null) {
+        const n = Number(lane.follow);
+        if (typeof lane.follow === "boolean" || !isFinite(n) || n < 0) {
+          warn(`lanes.${sec} "${l.id}" has follow: ${JSON.stringify(lane.follow)}; it should be a number of days.`);
+          if (base && base.follow != null) lane.follow = base.follow;
+          else delete lane.follow;
+        } else lane.follow = n;
+      }
+      if (typeof lane.name !== "string" || !lane.name.trim()) lane.name = base ? base.name : l.id;
+      out.push(lane);
     }
     /* every default lane id is required: put a missing one back next to its neighbor */
     dflt.forEach((d, i) => {
@@ -185,9 +277,26 @@ function checkConfig(cfg) {
     });
     cfg.lanes[sec] = out;
   }
-  for (const sec of Object.keys(cfg.stale || {})) {
+  /* stale: null (or false) turns the "no change in N days" nudges off; another wrong type falls back to the default */
+  if (cfg.stale == null || cfg.stale === false) cfg.stale = {};
+  else if (kind(cfg.stale) !== "object") {
+    warn("stale should be an object; using the default.");
+    cfg.stale = clone(DEFAULT_CONFIG.stale);
+  }
+  for (const sec of Object.keys(cfg.stale)) {
     const r = cfg.stale[sec];
     if (!r) continue;
+    if (kind(r) !== "object") {
+      warn(`stale.${sec} should be an object; using the default rule.`);
+      cfg.stale[sec] = clone(DEFAULT_CONFIG.stale[sec]) || null;
+      continue;
+    }
+    if (!isFinite(Number(r.days))) {
+      warn(`stale.${sec}.days should be a number; using the default rule.`);
+      cfg.stale[sec] = clone(DEFAULT_CONFIG.stale[sec]) || null;
+      continue;
+    }
+    r.days = Number(r.days);
     const ids = (cfg.lanes[sec] || []).map((l) => l.id);
     if (!Array.isArray(r.lanes) || (r.close && !ids.includes(r.close))) {
       warn(`stale.${sec} names a lane that doesn't exist; using the default rule.`);

@@ -26,7 +26,7 @@ You can still drag cards and edit everything by hand, but the idea is that you d
 Read AGENTS.md in my job search folder. From now on, keep my board up to date as I tell you what happens.
 ```
 
-**If you use a chat in the browser** (ChatGPT, Claude or Gemini), attach `board_data.js` and `AGENTS.md`, ask for your change, then save the file it gives back over the old one. For a prep sheet, ask for `prep.md` and save it in `Job notes/<job id>/`. If the file you get back is missing something, nothing is lost: the page keeps its own copy of every record and writes back anything missing.
+**If you use a chat in the browser** (ChatGPT, Claude or Gemini), attach `board_data.js` and `AGENTS.md`, ask for your change, then save the file it gives back over the old one (check first that it starts with the comment lines and `window.BOARD_DATA = {` and holds only data; see [Your data](#your-data-stays-on-your-computer)). For a prep sheet, ask for `prep.md` and save it in `Job notes/<job id>/`. If the file you get back is missing something, nothing is lost: the page keeps its own copy of every record and writes back anything missing.
 
 > Your board stays on your computer, but whatever you paste into a cloud AI tool is sent to that provider. Check its data settings before you share your résumé or notes.
 
@@ -84,7 +84,7 @@ Jamie Chen offered to refer me to Quillstone. Add Jamie to People and link them 
 
 It also:
 
-- Moves each job's résumé and cover-letter folder into a stage folder (`1 - To apply`, `2 - Applied`, `3 - Closed`) when the card changes lane, and flags a card whose résumé or cover letter PDF isn't in its folder.
+- Moves each job's résumé and cover-letter folder into a stage folder (`1 - To apply`, `2 - Applied`, `3 - Closed`) when the card changes lane. With saving on, it also flags an open job whose résumé or cover letter PDF isn't in its folder (closed jobs aren't flagged).
 - Shows **Next up** each morning: follow-ups due, upcoming calls, starred jobs, top to-dos and your plan.
 - Warns you before you apply somewhere a headhunter has already submitted you.
 - Backs up your data and notes every day, with an optional second copy on another drive.
@@ -140,6 +140,7 @@ Job Search/
 - Chrome and Edge can write to a folder you pick (the [File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_API)). Other browsers open the page as view-only.
 - Every change is also kept in the browser, so nothing is lost if saving pauses. If a notes file changes on disk while you type, both versions are kept.
 - Everything is plain text, so you can read it, search it or back it up with any tool, and it still works if this project goes away.
+- **`board_data.js` and `organizer.config.js` are loaded by the page as scripts**, so whatever is in them runs in the page, which can read and write your board folder. Only let tools you trust write them. An AI assistant should change only the JSON object in `board_data.js` and never add code (`AGENTS.md` tells it so). The page reads the file from your folder with a JSON parser, never runs it again, and warns you if it holds anything besides the comment lines and `window.BOARD_DATA = {…};`.
 
 ## Guides and prep sheets
 
@@ -155,13 +156,13 @@ Guides are ordinary Markdown with a few extras. The sample guides show every one
 | `::: fold Title` … `:::` | a block you can open and close |
 | `## Pay {.pay}` | a pay section (optionally blurred until you press H, for screen sharing) |
 
-A job gets a prep sheet as soon as `Job notes/<job id>/prep.md` exists. It opens from Applied onward, or straight away for a job with `sheet: true`. What you type in the answer boxes is saved to `Library/My_answers.md`, never to the guides. Your assistant knows this markup from `AGENTS.md`.
+A job gets a prep sheet as soon as `Job notes/<job id>/prep.md` exists. It opens by itself for a job from Applied through Offer, for a job with a call booked (unless it's closed), or straight away for a job with `sheet: true`; any other job with a prep sheet gets an **Open prep sheet** button. What you type in the answer boxes is saved to `Library/My_answers.md`, never to the guides. The page reads that file and merges it before every write, so a second browser or computer never overwrites answers it doesn't have. If your assistant rewords a question you already answered, your answer is listed under **Saved answers from earlier versions** at the end of the sheet. Your assistant knows this markup from `AGENTS.md`.
 
 ## How it's built
 
 - **No framework, no runtime dependencies.** 18 small plain-JavaScript files under `src/`, joined by an 80-line build script into one HTML file that runs from `file://`.
-- **Safe with other writers.** Records merge by `updatedAt`, nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
-- **Tested in a real browser.** 300 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
+- **Safe with other writers.** When the page and another tool both change a record, they merge field by field (each side keeps the fields it changed, and the newer `updatedAt` wins a field both changed). Nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
+- **Tested in a real browser.** 390 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
 - **Private.** Guides are escaped before rendering, and a test fails if the page makes any network request.
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -172,7 +173,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 npm install
 npx playwright install chromium   # once, for the tests
 npm run build                     # src/ -> boards/*/organizer.html
-npm test                          # 300 browser checks
+npm test                          # 390 browser checks
 npm run demo                      # the live demo page -> _site/index.html
 ```
 

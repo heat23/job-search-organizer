@@ -4,7 +4,7 @@ This folder is a job search board. The person keeps it up to date by asking you,
 
 ## Ground rules
 
-1. **Edit `board_data.js` in place.** Keep the first comment lines and the `window.BOARD_DATA = { ... };` wrapper. What's inside must stay valid JSON.
+1. **Edit `board_data.js` in place.** Keep the first comment lines and the `window.BOARD_DATA = { ... };` wrapper. What's inside must stay valid JSON. The page loads this file (and `organizer.config.js`) as a script, so change only the JSON object: never add code, other statements or anything outside the wrapper. The page warns the person when the file holds anything else.
 2. **Stamp every record you add or change** with `"updatedAt"` (the current time, ISO 8601 in UTC with a `Z`, later than the old value) and `"changedBy": "assistant"`. When two copies of a record differ, the newer `updatedAt` wins.
 3. **Never delete a record.** To remove one, set `"deleted": true`, `"removedAt"` and a new `updatedAt`.
 4. **Keep the fields you don't know about.** Change only what the request needs.
@@ -26,7 +26,7 @@ Dates: `followUp` and `keepUntil` are local dates `YYYY-MM-DD`. `callAt` is a lo
 | `movedAt`, `appliedAt`, `followUp` | When it last changed stage, when you applied, the next nudge date. |
 | `pay` | What the posting says about pay, as text. |
 | `resume`, `sentResume` | Which résumé version was tailored and which was sent (for example `v3`). |
-| `folder` | Path of the job's document folder, for example `1 - To apply/Acme - Staff Engineer`. The page keeps it current. |
+| `folder` | Path of the job's document folder inside the board, for example `1 - To apply/Acme - Staff Engineer`. The page keeps it current. Never a stage folder itself, `Library`, `Job notes`, `backups`, an absolute path or one with `..` or `\`: the page refuses those and moves nothing. |
 | `noResume`, `noLetter` | `true` when the job's package has no tailored résumé or no cover letter (the card stops asking for one). |
 | `resumeFile`, `letterFile` | File names inside the folder when they differ from the names in the settings (default `Resume.pdf` and `Cover_Letter.pdf`). |
 | `pinned`, `pinnedAt` | Starred: shown first under To apply and on Next up. |
@@ -67,14 +67,14 @@ Set `lane` and `movedAt`, and a new `followUp` (today plus the stage's days) unl
 
 - **Applied:** also set `appliedAt`, and `sentResume` if you know which version was sent.
 - **Call booked:** set `callAt`, `callType`, `callWith`, `callLink`, and set `followUp` to the day after the call. Move the job the way its call type's `moves` says: `screen` moves it from `applied` to `screen`, `interview` moves it from `applied` or `screen` to `interview`, `none` leaves it. With the default types, a recruiter call goes to `screen` and later rounds to `interview`.
-- **Closed:** set `closedReason` and clear `followUp` (`null`). A closed card never shows its call, so clearing the call fields is optional.
+- **Closed:** set `closedReason` and clear `followUp` (`null`). A closed card's call is hidden (on the card, in Upcoming calls and in quick open) and no longer opens the prep sheet by itself, so clearing the call fields is optional.
 - **Offer:** `lane: "offer"`, with a short summary in `notes`.
 
 ## A new job's résumé folder
 
 When the person asks you to set up the documents for a job (for example a tailored résumé you wrote):
 
-1. Create `1 - To apply/<Company> - <Role>/` (no `/` in the name; use the `stageFolders.todo` name if `organizer.config.js` changes it), even if the job is already further along.
+1. Create `1 - To apply/<Company> - <Role>/` (no `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>` or `|` in the name, and no dot or space at the end, so it also works on Windows; use the `stageFolders.todo` name if `organizer.config.js` changes it), even if the job is already further along.
 2. Save the files there under the names in `organizer.config.js` (`files.resume` and `files.coverLetter`, default `Resume.pdf` and `Cover_Letter.pdf`), or set `resumeFile` / `letterFile` on the job. Set `noLetter: true` if there is no cover letter.
 3. Set the job's `folder` to that path, with a new `updatedAt`. The page moves the folder to the job's stage folder on its own, and its card says when a file it expects isn't in the folder.
 
@@ -115,6 +115,6 @@ asks: First thing the posting asks for | Second | Third
 ## Pay {.pay}
 ```
 
-Markup: `✎` marks an answer the person should confirm and adds a "My version" box. `{.ask}` on a `###` question in a prep sheet adds an open "Their answer" box where the person types what the interviewer said (use it for questions the person asks them). Both boxes save to `Library/My_answers.md` under `## prep:<job id>::<question>`; never write them yourself, but read them when asked what was said. `☐` marks a fact to find out. `*<...>*` marks example text that is left out when copied. `::: fold Title` … `:::` makes a block that opens and closes. `{.pay}` on a heading lets the person blur that section when sharing their screen. Use only facts from the person's résumé, the posting and what they tell you. Never invent achievements or numbers.
+Markup: `✎` marks an answer the person should confirm and adds a "My version" box. `{.ask}` on a `###` question in a prep sheet adds an open "Their answer" box where the person types what the interviewer said (use it for questions the person asks them). Both boxes save to `Library/My_answers.md` under `## prep:<job id>::<question>` (the same question a second time on one sheet is saved as `<question> #2`); never write them yourself, but read them when asked what was said. Answers are matched to their question by its exact text, so don't reword a question the person has already answered: if you do, the answer is listed under "Saved answers from earlier versions" at the end of the sheet instead of under the question. `☐` marks a fact to find out. `*<...>*` marks example text that is left out when copied. `::: fold Title` … `:::` makes a block that opens and closes. `{.pay}` on a heading lets the person blur that section when sharing their screen. Use only facts from the person's résumé, the posting and what they tell you. Never invent achievements or numbers.
 
 Guides for every job (call scripts, a cheat sheet) live in `Library/<Group>/<NN>_<Title>.md` and use the same markup, except `{.ask}`, which only adds a box in a prep sheet (in a guide it is ignored).

@@ -655,23 +655,32 @@ function renderBoard(v, sec) {
   v.append(tabs, board);
 }
 /* A job's tailored résumé and cover letter live in its folder (see filing). noResume / noLetter mark a package without one;
-   resumeFile / letterFile override the file names from the settings. */
+   resumeFile / letterFile override the file names from the settings. A folder value that isn't a job folder inside
+   the board (see badFolder) gets no links. */
+const docName = (x, k) =>
+  String(x[k === "resume" ? "resumeFile" : "letterFile"] || CONFIG.files[k === "resume" ? "resume" : "coverLetter"]);
+const encPath = (p) => String(p).split("/").map(encodeURIComponent).join("/");
 function docsOf(x) {
-  if (!x || !x.folder) return { resume: null, letter: null };
-  const base = String(x.folder).split("/").map(encodeURIComponent).join("/") + "/";
+  if (!x || !x.folder || badFolder(x.folder)) return { resume: null, letter: null };
+  const base = encPath(x.folder) + "/";
+  const ok = (n) => !n.split("/").some((q) => !q || q === "." || q === "..");
+  const r = docName(x, "resume"),
+    l = docName(x, "letter");
   return {
-    resume: x.noResume ? null : base + encodeURIComponent(x.resumeFile || CONFIG.files.resume),
-    letter: x.noLetter ? null : base + encodeURIComponent(x.letterFile || CONFIG.files.coverLetter),
+    resume: x.noResume || !ok(r) ? null : base + encPath(r),
+    letter: x.noLetter || !ok(l) ? null : base + encPath(l),
   };
 }
 /* With saving on, the page also checks that the PDFs are really in the folder. Each folder is listed once and cached,
-   and listed again when you come back to the window and after job folders are filed, so drawing the board never waits
-   for the disk. Without folder access the tag only reflects the fields, as before. */
-const folderFiles = new Map(); // folder path -> Set of file names, or null when the folder isn't there
+   and listed again when you come back to the window and after a job folder moves, so drawing the board never waits
+   for the disk. Without folder access the tag only reflects the fields, as before. Names are compared the way macOS
+   and Windows do (case and Unicode form ignored). */
+const folderFiles = new Map(); // folder path -> Set of normalized file names, null when the folder isn't there, "?" unknown
+const fileKey = (n) => String(n).normalize("NFC").toLowerCase();
 let folderScanT = null,
   folderScanning = false,
   folderScanAgain = false;
-async function scanFolders(fresh) {
+async function scanFolders(fresh, only) {
   if (!dirHandle || !canWrite || VIEW_ONLY) return;
   if (folderScanning) {
     folderScanAgain = true;
@@ -681,9 +690,10 @@ async function scanFolders(fresh) {
   let changed = false;
   try {
     const want = new Set(
-      Object.values(live("jobs"))
-        .map((x) => x.folder)
-        .filter((f) => typeof f === "string" && f),
+      only ||
+        Object.values(live("jobs"))
+          .map((x) => x.folder)
+          .filter((f) => typeof f === "string" && f && !badFolder(f)),
     );
     for (const f of want) {
       if (!fresh && folderFiles.has(f)) continue;
@@ -691,14 +701,19 @@ async function scanFolders(fresh) {
       try {
         const d = await dirAt(f);
         names = new Set();
-        for await (const [n, h] of d.entries()) if (h.kind === "file") names.add(n);
+        for await (const [n, h] of d.entries()) if (h.kind === "file") names.add(fileKey(n));
       } catch (e) {
-        if (!e || e.name !== "NotFoundError") continue; // can't read it right now: keep what we knew
+        /* can't read it right now: keep what we knew, or mark it unknown so it isn't tried on every redraw */
+        if (!e || e.name !== "NotFoundError") {
+          if (!folderFiles.has(f)) folderFiles.set(f, "?");
+          continue;
+        }
       }
       const old = folderFiles.get(f);
       const same =
         folderFiles.has(f) &&
-        (old === names || (old && names && old.size === names.size && [...names].every((n) => old.has(n))));
+        (old === names ||
+          (old && old !== "?" && names && old.size === names.size && [...names].every((n) => old.has(n))));
       folderFiles.set(f, names);
       if (!same) changed = true;
     }
@@ -714,15 +729,25 @@ async function scanFolders(fresh) {
 }
 const fileChecks = () => !!(dirHandle && canWrite && !VIEW_ONLY);
 function docsTag(x, ln) {
+  if (x.folder && badFolder(x.folder)) {
+    if (laneOf("jobs", ln).done) return null;
+    return el("span", {
+      class: "tag docmiss",
+      title: `"folder" is “${x.folder}”: ${badFolder(x.folder)}. Set it to the job's own folder.`,
+      text: "✗ Check the folder path",
+    });
+  }
   const d = docsOf(x);
   if (fileChecks() && x.folder) {
     if (!folderFiles.has(x.folder)) {
       clearTimeout(folderScanT);
       folderScanT = setTimeout(() => scanFolders(false), 0);
-    } else {
+    } else if (folderFiles.get(x.folder) !== "?") {
       const have = folderFiles.get(x.folder);
-      const rMiss = !!d.resume && !(have && have.has(x.resumeFile || CONFIG.files.resume));
-      const lMiss = !!d.letter && !(have && have.has(x.letterFile || CONFIG.files.coverLetter));
+      /* a file in a subfolder of the job's folder isn't listed here, so it isn't checked */
+      const miss = (k) => !docName(x, k).includes("/") && !(have && have.has(fileKey(docName(x, k))));
+      const rMiss = !!d.resume && miss("resume");
+      const lMiss = !!d.letter && miss("letter");
       if (rMiss || lMiss) {
         if (laneOf("jobs", ln).done) return null;
         const what = rMiss && lMiss ? "Résumé and cover letter files" : rMiss ? "Résumé file" : "Cover letter file";

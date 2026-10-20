@@ -72,6 +72,26 @@ function hunterSections(id, x) {
   }
   return { html: h, nav };
 }
+/* Answers saved for this job whose question is no longer on the sheet (the assistant reworded or removed it): listed,
+   folded, at the end of the sheet, to copy or remove. `keys` are the answer boxes the sheet has now. */
+function earlierAnswers(id, keys) {
+  const pre = "prep:" + id + "::";
+  const have = new Set(keys);
+  return Object.entries(MY)
+    .filter(([k, v]) => k.startsWith(pre) && !have.has(k) && v && v.trim())
+    .sort((a, b) => a[0].localeCompare(b[0]));
+}
+function earlierHtml(id, keys) {
+  const list = earlierAnswers(id, keys);
+  if (!list.length) return "";
+  const pre = "prep:" + id + "::";
+  return `<section class="hs earlier" id="p-earlier" data-title="Saved answers from earlier versions"><details class="fold"><summary>Saved answers from earlier versions (${list.length})</summary><p class="muted">Answers you typed for questions that are no longer on this sheet (the question was reworded or removed). They stay in Library › My_answers.md until you remove them.</p>${list
+    .map(
+      ([k, v]) =>
+        `<div class="hq earlier" data-ek="${esc(k)}"><h4><span>${esc(k.slice(pre.length))}</span></h4><blockquote class="say"><p>${esc(v.trim()).replace(/\n/g, "<br>")}</p></blockquote><div class="eacts"><button type="button" class="btn small erm">Remove</button></div></div>`,
+    )
+    .join("")}</details></section>`;
+}
 function leaveField(node) {
   try {
     node.blur();
@@ -87,9 +107,12 @@ function leaveField(node) {
 function enhance(sec, d, id, x, keep) {
   const ln = laneKey(sec, x);
   const hasPrep = sec === "jobs" && validPrep(PREPTXT[id]);
-  const active = sec === "jobs" ? ACTIVE_LANES.includes(ln) : sec === "hunters" && !laneOf("hunters", ln).done;
-  /* sheet: true (set by the assistant) opens a job in any other lane straight to its prep sheet, once prep.md exists */
-  const useSheet = active || callLive(x) || (sec === "jobs" && (sheetOverride[id] || (x.sheet === true && hasPrep)));
+  const done = !!laneOf(sec, ln).done;
+  const active = sec === "jobs" ? ACTIVE_LANES.includes(ln) : sec === "hunters" && !done;
+  /* sheet: true (set by the assistant) opens a job in any other lane straight to its prep sheet, once prep.md exists.
+     A booked call opens the sheet too, except on a closed card (Open prep sheet still does). */
+  const useSheet =
+    active || (callLive(x) && !done) || (sec === "jobs" && (sheetOverride[id] || (x.sheet === true && hasPrep)));
   if (!useSheet) {
     if (hasPrep) {
       const btn = el("button", {
@@ -177,7 +200,21 @@ function enhance(sec, d, id, x, keep) {
   bar.hidden = true;
   bar.innerHTML =
     '<span>This prep sheet changed on disk.</span> <button type="button" class="btn small primary">Reload it</button>';
-  let nav = [];
+  let nav = [],
+    sheetKeys = [];
+  /* redraw only the "Saved answers from earlier versions" section (after a removal, or answers read from the file) */
+  function refreshEarlier() {
+    if (!isJob) return;
+    const cur = $q("#p-earlier", left);
+    const wasOpen = !!(cur && $q("details.fold", cur) && $q("details.fold", cur).open);
+    const html = earlierHtml(id, sheetKeys);
+    if (cur) cur.remove();
+    if (!html) return;
+    left.insertAdjacentHTML("beforeend", html);
+    const sec = $q("#p-earlier", left);
+    if (wasOpen) $q("details.fold", sec).open = true;
+    wireCopy(left);
+  }
   function build() {
     const jd = isJob ? JOBDOCS[id] || {} : {};
     let lh = "";
@@ -212,6 +249,8 @@ function enhance(sec, d, id, x, keep) {
         lh += `<section class="hs" id="p-posting" data-title="Posting"><h3 class="hs-h"><span>The posting</span></h3><details class="fold"><summary>Open the saved posting</summary>${plain(jd.posting)}</details></section>`;
         nav.push(["p-posting", "Posting"]);
       }
+      sheetKeys = dd ? dd.keys : [];
+      if (dd) lh += earlierHtml(id, sheetKeys);
     } else {
       const hs = hunterSections(id, x);
       lh += hs.html;
@@ -363,6 +402,22 @@ function enhance(sec, d, id, x, keep) {
     }
   });
   left.addEventListener("click", (e) => {
+    /* Remove a saved answer from an earlier version of the sheet, after a confirm */
+    const row = e.target.closest(".hq.earlier");
+    if (row && e.target.closest(".eacts button")) {
+      const acts = $q(".eacts", row);
+      const b = e.target.closest(".eacts button");
+      if (b.classList.contains("erm")) {
+        acts.innerHTML =
+          '<span>Remove this answer from My_answers.md?</span> <button type="button" class="btn small erm-yes">Remove</button> <button type="button" class="btn small erm-no">Keep</button>';
+      } else if (b.classList.contains("erm-no")) {
+        acts.innerHTML = '<button type="button" class="btn small erm">Remove</button>';
+      } else if (b.classList.contains("erm-yes")) {
+        mySet(row.dataset.ek, "");
+        refreshEarlier();
+      }
+      return;
+    }
     const hh = e.target.closest(".hq h4");
     if (hh && cuesOnly && !e.target.closest(".hcopy") && !e.target.closest("a"))
       hh.parentElement.classList.toggle("open");
@@ -428,6 +483,12 @@ function enhance(sec, d, id, x, keep) {
     refreshDocs().then((ch) => {
       if (ch && d.isConnected) rebuild();
     });
+    /* answers read from My_answers.md after the sheet opened can belong in "Saved answers from earlier versions" */
+    const onAnswers = () => {
+      if (!d.isConnected) document.removeEventListener("jso-answers", onAnswers);
+      else refreshEarlier();
+    };
+    document.addEventListener("jso-answers", onAnswers);
     if (isJob) {
       bar.querySelector("button").onclick = () => {
         PREPTXT[id] = pendingText;

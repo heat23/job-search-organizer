@@ -3,7 +3,10 @@
 window.ORGANIZER_CONFIG = {
   // ownerName: "Alex",                                   // page title becomes "Alex's job search"
   // files: { resume: "Alex_Resume.pdf", coverLetter: "Alex_Cover_Letter.pdf" },
-  // stageFolders: { todo: "1 - To apply", applied: "2 - Applied", closed: "3 - Closed", removed: "4 - Removed" },
+  // stageFolders: {                                     // list all seven: a lane you leave out keeps its default
+  //   todo: "1 - To apply", applied: "2 - Applied", screen: "2 - Applied", interview: "2 - Applied",
+  //   offer: "2 - Applied", closed: "3 - Closed", removed: "4 - Removed",
+  // },                                                    // rename a stage folder before any job folder is in it
   // lanes: { jobs: [ ... ] },                            // rename lanes or change follow-up days (keep the ids)
   //                                                      // list every lane: { id: "applied", name: "Sent", follow: 10 }
   // callTypes: [                                         // the booking box; this list replaces the default one

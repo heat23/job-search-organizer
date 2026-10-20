@@ -68,12 +68,13 @@ function callRow(sec, id, x, strip, summary) {
   };
   const type = mk("select");
   type.setAttribute("aria-label", "Call type");
+  /* value= keeps the label exactly (an option without one collapses repeated spaces) */
   type.innerHTML =
     '<option value="">Call type…</option>' +
     CALLTYPES.map((t) => t.label)
       /* a type that was renamed in the settings since this call was booked stays selectable, so it isn't cleared */
       .concat(x.callType && !CALLTYPES.some((t) => t.label === x.callType) ? [x.callType] : [])
-      .map((t) => `<option${x.callType === t ? " selected" : ""}>${esc(t)}</option>`)
+      .map((t) => `<option value="${esc(t)}"${x.callType === t ? " selected" : ""}>${esc(t)}</option>`)
       .join("");
   const when = mk("input");
   when.type = "datetime-local";
@@ -89,16 +90,22 @@ function callRow(sec, id, x, strip, summary) {
   link.placeholder = "Meeting link or phone";
   link.value = x.callLink || "";
   link.setAttribute("aria-label", "Meeting link");
-  const commit = () => {
+  /* Only the field you changed is written (the change event says which), so a field the panel shows out of date can
+     never overwrite the stored value, and a stored time in another format is left alone until you edit it. */
+  const keyOf = new Map([
+    [type, "callType"],
+    [when, "callAt"],
+    [who, "callWith"],
+    [link, "callLink"],
+  ]);
+  const commit = (src) => {
     const cur = get(sec, id);
     if (!cur) return;
-    /* only the fields you changed are written; a stored time in another format is left alone until you edit it */
-    const now = { callType: type.value, callAt: when.value, callWith: who.value, callLink: link.value };
-    const patch = {};
-    for (const k of Object.keys(now)) {
-      const was = k === "callAt" ? toLocalInput(cur.callAt) : cur[k] || "";
-      if (now[k] !== was) patch[k] = now[k];
-    }
+    const k = keyOf.get(src);
+    if (!k) return;
+    const v = src.value;
+    const was = k === "callAt" ? toLocalInput(cur.callAt) : cur[k] || "";
+    const patch = v !== was ? { [k]: v } : {};
     if (!Object.keys(patch).length) return;
     const typeChanged = "callType" in patch,
       dateChanged = "callAt" in patch;
@@ -106,7 +113,8 @@ function callRow(sec, id, x, strip, summary) {
     render();
     const laneBefore = laneKey(sec, get(sec, id));
     let followed = false;
-    if (get(sec, id).callAt && (dateChanged || typeChanged)) {
+    /* picking the blank type ("Call type…") clears it without moving the card */
+    if (get(sec, id).callAt && (dateChanged || (typeChanged && patch.callType))) {
       focusWithNext = true;
       autoMove(sec, id, get(sec, id).callType);
       followed = setFollowAfter(sec, id, get(sec, id).callAt);
@@ -123,7 +131,7 @@ function callRow(sec, id, x, strip, summary) {
       summary.textContent = get(sec, id).callAt ? "Edit the call" : "Book a call";
     }
   };
-  [type, when, who, link].forEach((e) => e.addEventListener("change", commit));
+  [type, when, who, link].forEach((e) => e.addEventListener("change", () => commit(e)));
   /* so the panel can bring them up to date after another tool changes the call (see refreshDrawer) */
   [
     [type, "callType"],

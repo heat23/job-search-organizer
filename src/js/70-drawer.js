@@ -67,11 +67,15 @@ function refreshDrawer() {
   d.querySelectorAll("[data-fkey]").forEach((n) => {
     if (pending[n.dataset.fkey] || (n === a && !untouched(n))) return;
     const v = fieldValue(n, x);
-    if (n.dataset.fkind === "ref" && v && ![...n.options].some((o) => o.value === v)) {
-      const p = get("people", v);
-      n.lastElementChild.before(
-        el("option", { value: v, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
-      );
+    /* a list that has no option for the new value gets one (a person added since, or a call type that isn't in the
+       settings), so the list shows the stored value instead of a blank that a later edit would save */
+    if (n.tagName === "SELECT" && v && ![...n.options].some((o) => o.value === v)) {
+      if (n.dataset.fkind === "ref") {
+        const p = get("people", v);
+        n.lastElementChild.before(
+          el("option", { value: v, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
+        );
+      } else n.append(el("option", { value: v, text: v }));
     }
     if (n.value === v) return;
     n.value = v;
@@ -482,7 +486,7 @@ function closeDrawer() {
   /* changes picked up from the folder while the panel was open: file the moved job folders now */
   if (fileOnClose) {
     fileOnClose = false;
-    setTimeout(fileJobs, 50);
+    setTimeout(() => fileJobs(true), 50);
   }
   if (back && get(back.sec, back.id)) {
     openDrawer(back.sec, back.id);

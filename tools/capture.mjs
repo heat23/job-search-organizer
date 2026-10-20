@@ -11,7 +11,9 @@ import { createRequire } from "node:module";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 process.env.SAMPLE_TREE = join(ROOT, "boards", "sample");
-const { files } = require("../tests/lib.js");
+const { files, data } = require("../tests/lib.js");
+// The sample's dates are relative to the day it was saved: the pictures use that day, so follow-ups aren't all weeks late.
+const NOW = new Date(Date.parse(data.savedAt) + 2 * 3600e3);
 const OUT = join(ROOT, "docs", "images");
 const TMP = join(ROOT, "docs", ".video");
 mkdirSync(OUT, { recursive: true });
@@ -23,6 +25,7 @@ const CURSOR = `addEventListener("DOMContentLoaded",()=>{const c=document.create
 
 async function open(ctx, scheme = "light", cursor = false) {
   const p = await ctx.newPage();
+  await p.clock.install({ time: NOW });
   await p.emulateMedia({ colorScheme: scheme });
   await p.addInitScript(FFS);
   await p.addInitScript(

@@ -18,6 +18,7 @@ let dirHandle = null,
 let localOk = true;
 function persistLocal() {
   localOk = lsSet("board", JSON.stringify(store));
+  lsSet("bases", JSON.stringify(unsyncedBases()));
   return localOk;
 }
 let gen = 0;
@@ -48,16 +49,30 @@ async function readFileInto() {
     extras = Object.create(null);
     keepExtras(raw);
     const n = normalize(raw);
+    const next = merge(store, emptyStore());
     for (const c of COLLS)
       for (const id of Object.keys(n[c])) {
         const k = c + ":" + id;
         fileBase[k] = Math.max(fileBase[k] || 0, ts(n[c][id]));
+        next[c][id] = merge3(next[c][id], n[c][id], fileRecs[k]);
+        fileRecs[k] = n[c][id];
       }
-    store = merge(store, n);
+    store = next;
+    checkWrapper(t);
     return "ok";
   } catch (e) {
     return "bad";
   }
+}
+let wrapperWarned = "";
+function checkWrapper(t) {
+  if (wrapperOk(t) || wrapperWarned === t) return;
+  wrapperWarned = t;
+  const m = `${DATA_FILE} holds something besides the data: text before or after window.BOARD_DATA = {…};. The page loads that file as a script, so check which tool wrote it. The next save writes a clean copy.`;
+  try {
+    console.warn(m);
+  } catch (e) {}
+  showToast(m);
 }
 async function writeFile() {
   if (!dirHandle || !canWrite) {
@@ -82,11 +97,13 @@ async function writeFile() {
       await w.write(serialize(store));
       await w.close();
       setFileBase(store);
+      setFileRecs(store);
       persistLocal();
       lastSaved = new Date();
       saveErr = "";
       if (gen === g) dirty = false;
       setTimeout(fileJobs, 50);
+      myResume();
     }
   } catch (e) {
     if (e && e.name === "NotFoundError") {
@@ -164,6 +181,24 @@ function splitFolder(f) {
     ? { stage: p[0], name: p.slice(1).join("/") }
     : { stage: "", name: String(f || "") };
 }
+/* Folders at the top of the board that are never a job's folder (a job's "folder" naming one of them would move it). */
+const RESERVED_DIRS = ["Library", "Job notes", "backups"];
+const sameName = (a, b) => String(a).normalize("NFC").toLowerCase() === String(b).normalize("NFC").toLowerCase();
+/* Why a job's "folder" value can't be a job folder, or "" when it can. Checked before anything is moved or linked:
+   it must be a relative path inside the board, not a stage folder, Library, Job notes or backups, nor the board itself. */
+function badFolder(f) {
+  if (typeof f !== "string" || !f.trim()) return "it's empty";
+  if (/^[\\/]|^[A-Za-z]:|^~/.test(f)) return "it's an absolute path";
+  if (f.includes("\\")) return "it has a backslash (use / between folders)";
+  const segs = f.split("/");
+  if (segs.some((x) => !x.trim() || x === "." || x === "..")) return "it has an empty, . or .. part";
+  if (RESERVED_DIRS.some((r) => sameName(r, segs[0]))) return `it points into ${segs[0]}/`;
+  if (segs.length === 1 && /\.(js|html|md)$/i.test(segs[0])) return "it names a file";
+  const { name } = splitFolder(f);
+  const first = name.split("/")[0];
+  if (STAGE_DIRS.some((d) => sameName(d, f) || sameName(d, first))) return "it names a stage folder, not a job folder";
+  return "";
+}
 async function dirAt(path, create) {
   let d = dirHandle;
   for (const part of String(path).split("/").filter(Boolean))
@@ -178,8 +213,13 @@ async function hasDir(path) {
     return false;
   }
 }
-async function copyFolder(src, dst) {
-  for await (const [n, h] of src.entries()) {
+/* Copies src into dst. The list of entries is taken first, and a folder that is the destination itself is skipped, so a
+   copy can never walk into the copy it is making. */
+async function copyFolder(src, dst, root) {
+  root = root || dst;
+  const list = [];
+  for await (const e of src.entries()) list.push(e);
+  for (const [n, h] of list) {
     if (h.kind === "file") {
       const f = await h.getFile();
       const o = await dst.getFileHandle(n, { create: true });
@@ -187,10 +227,19 @@ async function copyFolder(src, dst) {
       await w.write(f);
       await w.close();
       if ((await (await dst.getFileHandle(n)).getFile()).size !== f.size) throw new Error("copy check failed: " + n);
-    } else await copyFolder(h, await dst.getDirectoryHandle(n, { create: true }));
+    } else {
+      let self = false;
+      try {
+        self = await h.isSameEntry(root);
+      } catch (e) {}
+      if (self) throw new Error("a folder can't be copied into itself");
+      await copyFolder(h, await dst.getDirectoryHandle(n, { create: true }), root);
+    }
   }
 }
+const inside = (to, from) => to === from || to.startsWith(from + "/");
 async function moveDir(from, to) {
+  if (inside(to, from) || inside(from, to)) throw new Error("a folder can't move into itself");
   const parts = to.split("/"),
     name = parts.pop();
   const src = await dirAt(from);
@@ -207,23 +256,54 @@ async function moveDir(from, to) {
     fname = fp.pop();
   await (await dirAt(fp.join("/"))).removeEntry(fname, { recursive: true });
 }
-async function fileJobs() {
+/* Filing works on the jobs whose stage or folder changed since they were last filed (one save never lists every folder).
+   fileJobs(true) checks every job: at start-up, when another tool changed the data file, and when a panel closes after
+   such a change. Removed jobs' folders are checked for deletion once a day. */
+const filedSig = new Map();
+const fileSig = (x) => [x.deleted ? 1 : 0, laneKey("jobs", x), x.folder || ""].join("|");
+let purgedDay = "",
+  fileFull = false;
+const badWarned = new Set();
+async function fileJobs(full) {
   if (!dirHandle || !canWrite || VIEW_ONLY) return;
+  if (full === true) fileFull = true;
   if (filing) {
     fileAgain = true;
     return;
   }
   filing = true;
+  const all = fileFull;
+  fileFull = false;
+  const purge = all || purgedDay !== TODAY();
   const moved = [],
-    failed = [];
+    failed = [],
+    bad = [],
+    rescan = [];
   try {
     for (const [id, x] of Object.entries(store.jobs)) {
-      if (!x || !x.folder) continue;
+      if (!x || !x.folder) {
+        filedSig.delete(id);
+        continue;
+      }
+      const sig = fileSig(x);
+      const removedWaiting = x.deleted && splitFolder(x.folder).stage === REMOVED_DIR;
+      if (!all && filedSig.get(id) === sig && !(purge && removedWaiting)) continue;
+      filedSig.set(id, sig);
+      const why = badFolder(x.folder);
+      if (why) {
+        const k = id + "|" + x.folder;
+        if (!badWarned.has(k)) {
+          badWarned.add(k);
+          bad.push(`${x.company || id} (“${x.folder}”: ${why})`);
+        }
+        continue;
+      }
       const want = x.deleted ? REMOVED_DIR : STAGE_DIR[laneKey("jobs", x)];
       if (!want) continue;
       const { stage, name } = splitFolder(x.folder);
       /* A removed card's files wait in the removed folder (Restore brings them back), then are deleted for good. */
-      if (x.deleted && stage === REMOVED_DIR) {
+      if (removedWaiting) {
+        if (!purge) continue;
         const since = Date.parse(x.removedAt || x.updatedAt || "");
         if (since && Date.now() - since > PURGE_DAYS * 864e5) {
           try {
@@ -236,6 +316,7 @@ async function fileJobs() {
           }
           const r = store.jobs[id];
           store.jobs[id] = { ...r, folder: null, filesDeletedAt: nowIso(), updatedAt: stamp(r), changedBy: "you" };
+          filedSig.delete(id);
           persist();
         }
         continue;
@@ -245,7 +326,7 @@ async function fileJobs() {
       try {
         let from = null;
         for (const c of [x.folder, ...STAGE_DIRS.map((s) => s + "/" + name)])
-          if (c !== target && (await hasDir(c))) {
+          if (c !== target && !inside(target, c) && !inside(c, target) && (await hasDir(c))) {
             from = c;
             break;
           }
@@ -263,17 +344,25 @@ async function fileJobs() {
         }
         const r = store.jobs[id];
         store.jobs[id] = { ...r, folder: target, updatedAt: stamp(r), changedBy: "you" };
+        filedSig.set(id, fileSig(store.jobs[id]));
+        rescan.push(target);
         persist();
       } catch (e) {
         failed.push(x.company || name);
       }
     }
+    if (purge) purgedDay = TODAY();
   } finally {
     filing = false;
   }
-  if (moved.length || failed.length) render();
-  scanFolders(true);
-  if (failed.length && !lastUndo)
+  if (moved.length || failed.length || bad.length) render();
+  /* only the folders that moved are listed again (every folder is listed when you come back to the window) */
+  if (rescan.length) scanFolders(true, rescan);
+  if (bad.length)
+    showToast(
+      `Didn't move the folder for ${bad.join("; ")}. A job's "folder" must be its own folder, such as “${STAGE_DIR.todo}/Acme - Engineer”. Nothing was moved.`,
+    );
+  else if (failed.length && !lastUndo)
     showToast(`Couldn't file the folder for ${failed.join(", ")}. Nothing was lost; check the stage folders.`);
   else if (moved.length > 1 && !lastUndo) showToast(`Filed ${moved.length} job folders by stage.`);
   if (fileAgain) {
@@ -341,8 +430,10 @@ async function connectFolder() {
     dirHandle = h;
     canWrite = true;
     await idbSet("dir", h);
+    const warned = wrapperWarned;
     await writeFile();
-    if (!saveErr)
+    /* a warning about the data file (see checkWrapper) stays up instead of this message */
+    if (!saveErr && wrapperWarned === warned)
       showToast(
         fresh
           ? `Saving is on. ${DATA_FILE} was created in “${h.name}”; keep this page in that folder.`

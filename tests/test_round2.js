@@ -2,10 +2,12 @@
 // loose company matching for headhunter contacts, the daily backup on a day without edits, résumé file checks, and
 // tests for older behavior: the plan, Apply next, referrals, headhunter conflicts, two tabs, the removed-folder purge
 // and the day rollover.
-const { ok, wait, launch, mkpage, report, data, boardText } = require("./lib.js");
+const { ok, wait, launch, mkpage, report, data, boardText, files } = require("./lib.js");
 
+/* fire the focus handler, wait for its pass to finish (focusRun), then `ms` more for what it starts (a redraw, a save) */
 const focus = async (p, ms = 1500) => {
   await p.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await p.evaluate(() => (typeof focusRun !== "undefined" && focusRun) || null);
   await wait(p, ms);
 };
 const openJob = async (p, id, sec = "jobs") => {
@@ -348,15 +350,21 @@ const ymd = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOStri
       tags = await cardTags(p, "tidewater");
       ok("D a missing cover letter shows ✗ Cover letter file missing", tags.includes("✗ Cover letter file missing"));
       ok("D no errors", !p.errs.length, p.errs.join("|"));
-      // without folder access, the tag reflects the fields as before
-      const p2 = await mkpage(ctx);
+      await ctx.close();
+      // without folder access (a fresh browser: no remembered folder), the tag reflects the fields as before, even
+      // though the cover letter really is missing from the folder
+      const ctx2 = await b.newContext({ viewport: { width: 1440, height: 900 } });
+      const fl = files();
+      delete fl[data.jobs.tidewater.folder + "/Cover_Letter.pdf"];
+      const p2 = await mkpage(ctx2, { files: fl });
       await p2.click("#nav-jobs");
-      await wait(p2, 300);
+      await wait(p2, 800);
+      ok("D (the second page has no folder access)", (await p2.evaluate(() => !dirHandle && !fileChecks())) === true);
       ok(
         "D without saving on the tag is unchanged (fields only)",
         (await cardTags(p2, "tidewater")).includes("✓ Résumé + letter"),
       );
-      await ctx.close();
+      await ctx2.close();
     }
     // ---- B: daily data backup on a day without edits, and the day rollover (fixed clock)
     {
@@ -380,6 +388,13 @@ const ymd = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOStri
       await wait(p, 200);
       let tags = await cardTags(p, "lumenfield");
       ok("B before the rollover the follow-up is tomorrow", !tags.includes("Follow up today"), tags.join(","));
+      /* let the start-up pass (2.5 s after load) take day 1's backup first, so day 2's can only come from the rollover */
+      await wait(p, 2500);
+      ok(
+        "B (the start-up pass has run, and no day-2 backup exists yet)",
+        !((await p.evaluate(() => window.__ls("backups"))) || []).includes(`board_data_${fu}.js`) &&
+          (await p.evaluate(() => startedUp)),
+      );
       await p.clock.setSystemTime(localDay(fu, 0));
       await p.clock.fastForward(5 * 60 * 1000 + 1000);
       await wait(p, 600);

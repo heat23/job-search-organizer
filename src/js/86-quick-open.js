@@ -74,7 +74,8 @@ function openQuick() {
         laneId,
         done: !!ln.done,
         hay: [S.title(x), S.sub(x), x.company, x.firm, x.role, x.name].filter(Boolean).join(" ").toLowerCase(),
-        call: callLive(x) ? shortCall(x.callAt) : "",
+        /* a closed card's call is over as far as the board is concerned: no badge, no "booked call" ranking */
+        call: callLive(x) && !ln.done ? shortCall(x.callAt) : "",
       });
     }
   let LIBX = null;

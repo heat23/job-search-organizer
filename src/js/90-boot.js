@@ -80,7 +80,8 @@ if (!fileCopy && !localCopy && !FS_OK)
         (!fileCopy || collectionsOnly(store) !== collectionsOnly(fileCopy) || before !== collectionsOnly(store))
       )
         writeFile();
-      setTimeout(fileJobs, 300);
+      setTimeout(() => fileJobs(true), 300);
+      myResume();
     }
   }
   render();
@@ -94,29 +95,26 @@ const startTimer = setInterval(() => {
     setInterval(startup, 20 * 60 * 1000);
   }
 }, 2500);
-/* Pick up changes another tool (a script, an AI assistant) made while this page was open: new prep sheets, then the data file.
+/* Pick up changes another tool (a script, an AI assistant) made while this page was open: the data file first, then new
+   prep sheets (reading the data file first keeps the time in which an edit typed in the panel could race it short).
    With a panel or prep sheet open, the changes are merged in the background: the notes pad stays as it is, the panel's
    fields show the merged values (except one you are typing in, see refreshDrawer), and the board is redrawn and job
-   folders are filed when the panel closes. */
+   folders are filed when the panel closes. `focusRun` is the running pass (tests wait for it). */
 const panelOpen = () => $("#drawerRoot").childNodes.length > 0;
-window.addEventListener("focus", async () => {
+let focusRun = null;
+async function onFocus() {
   const ref = panelOpen() && openRef ? { ...openRef } : null;
-  const recBefore = ref ? JSON.stringify(get(ref.sec, ref.id) || null) : "";
-  const prepBefore = ref ? PREPTXT[ref.id] : undefined;
+  let recBefore = ref ? JSON.stringify(get(ref.sec, ref.id) || null) : "";
+  let prepBefore = ref ? PREPTXT[ref.id] : undefined;
   const syncPanel = () => {
     if (!ref || !openRef || openRef.sec !== ref.sec || openRef.id !== ref.id) return;
-    if (JSON.stringify(get(ref.sec, ref.id) || null) !== recBefore || PREPTXT[ref.id] !== prepBefore) refreshDrawer();
+    const rec = JSON.stringify(get(ref.sec, ref.id) || null);
+    if (rec !== recBefore || PREPTXT[ref.id] !== prepBefore) {
+      recBefore = rec;
+      prepBefore = PREPTXT[ref.id];
+      refreshDrawer();
+    }
   };
-  /* an open prep sheet checks its own prep.md; a plain panel does not, so its job is scanned like the rest */
-  if (FS.ok())
-    await scanPrep(
-      panelOpen()
-        ? {
-            quiet: true,
-            skip: openRef && openRef.sec === "jobs" && $("#drawerRoot .drawer.prep") ? openRef.id : null,
-          }
-        : undefined,
-    );
   if (dirHandle && canWrite && !writing) {
     const before = collectionsOnly(store);
     const r = await readFileInto();
@@ -137,26 +135,43 @@ window.addEventListener("focus", async () => {
         renderStatus();
       } else {
         render();
-        /* a card moved by another tool gets its job folder filed by stage right away */
-        setTimeout(fileJobs, 50);
+        /* a card moved by another tool gets its job folder filed by stage right away (every job is checked) */
+        setTimeout(() => fileJobs(true), 50);
       }
     } else renderStatus();
-    scanFolders(true);
-    /* The file is missing something this browser has (a tool wrote back an older or partial copy): write it back. */
+    /* The file is missing something this browser has (a tool wrote back an older or partial copy, or a record was merged
+       field by field): write it back. */
     if (r === "ok" && lastRaw && collectionsOnly(normalize(parseDataText(lastRaw))) !== collectionsOnly(store)) {
       gen++;
       dirty = true;
       clearTimeout(saveTimer);
       saveTimer = setTimeout(writeFile, 400);
     }
+    syncPanel();
+  }
+  /* an open prep sheet checks its own prep.md; a plain panel does not, so its job is scanned like the rest */
+  if (FS.ok()) {
+    await scanPrep(
+      panelOpen()
+        ? {
+            quiet: true,
+            skip: openRef && openRef.sec === "jobs" && $("#drawerRoot .drawer.prep") ? openRef.id : null,
+          }
+        : undefined,
+    );
+    scanFolders(true);
   }
   syncPanel();
+}
+window.addEventListener("focus", () => {
+  focusRun = onFocus();
 });
-/* Keep two open copies of the page in step. */
+/* Keep two open copies of the page in step. An open panel shows the other tab's change like a change from the folder. */
 window.addEventListener("storage", (e) => {
   if (e.key !== lsKey("board") || !e.newValue) return;
   try {
     const before = collectionsOnly(store);
+    const recBefore = openRef ? JSON.stringify(get(openRef.sec, openRef.id) || null) : "";
     store = merge(store, normalize(JSON.parse(e.newValue)));
     if (collectionsOnly(store) !== before) {
       if (canWrite) {
@@ -165,7 +180,8 @@ window.addEventListener("storage", (e) => {
         clearTimeout(saveTimer);
         saveTimer = setTimeout(writeFile, 400);
       }
-      if (!$("#drawerRoot").childNodes.length) render();
+      if (!panelOpen()) render();
+      else if (openRef && JSON.stringify(get(openRef.sec, openRef.id) || null) !== recBefore) refreshDrawer();
     }
   } catch (x) {}
 });

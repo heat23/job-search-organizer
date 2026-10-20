@@ -2051,6 +2051,20 @@ a.hit span {
 .pleft.cuesonly .hq.open h4::after {
   content: "  ▾";
 }
+/* saved answers from an earlier version of the sheet always show their text */
+.pleft.cuesonly .hq.earlier blockquote.say {
+  display: block;
+}
+.pleft.cuesonly .hq.earlier h4::after {
+  content: none;
+}
+.hq.earlier .eacts {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
 /* a "Their answer" question with no answer of yours has nothing to show */
 .pleft.cuesonly .hq:has(> details.mine.ask):not(:has(blockquote.say)) h4::after {
   content: none;
@@ -2293,6 +2307,87 @@ function checkConfig(cfg) {
       console.warn("organizer.config.js: " + m);
     } catch (e) {}
   };
+  /* Every setting has the type of its default: a wrong one (null, a string where a list or an object belongs, a word
+     where a number belongs) falls back to the default with a warning, rather than leaving a blank page. */
+  const kind = (v) => (v === null ? "null" : Array.isArray(v) ? "list" : typeof v);
+  const clone = (v) => (v && typeof v === "object" ? JSON.parse(JSON.stringify(v)) : v);
+  const NULLABLE = ["demo", "library.hunterScript", "library.hunterPlaybook"];
+  const OWN_CHECK = ["lanes", "callTypes", "stale", "plan.weekNames"];
+  const fix = (obj, dflt, path) => {
+    for (const k of Object.keys(dflt)) {
+      const p = path ? path + "." + k : k;
+      const d = dflt[k],
+        v = obj[k];
+      if (OWN_CHECK.includes(p) || d === null) continue;
+      if (v === undefined) {
+        obj[k] = clone(d);
+        continue;
+      }
+      if (v === null && NULLABLE.includes(p)) continue;
+      if (kind(v) !== kind(d)) {
+        if (kind(d) === "number" && typeof v === "string" && v.trim() && isFinite(+v)) {
+          obj[k] = +v;
+          continue;
+        }
+        warn(`${p} should be ${kind(d) === "object" ? "an object" : "a " + kind(d)}; using the default.`);
+        obj[k] = clone(d);
+      } else if (kind(d) === "object") fix(v, d, p);
+    }
+  };
+  fix(cfg, DEFAULT_CONFIG, "");
+  for (const sec of ["hunters", "people"])
+    for (const f of ["label", "short", "noun"])
+      if (!cfg.sections[sec][f].trim()) {
+        warn(`sections.${sec}.${f} is empty; using the default.`);
+        cfg.sections[sec][f] = DEFAULT_CONFIG.sections[sec][f];
+      }
+  cfg.closedReasons = cfg.closedReasons.filter((r) => typeof r === "string" && r.trim());
+  /* patterns (pillLabels, the headhunter sheet headings) must be valid regular expressions */
+  const reOk = (r) => {
+    try {
+      new RegExp(r);
+      return typeof r === "string";
+    } catch (e) {
+      return false;
+    }
+  };
+  cfg.library.pillLabels = cfg.library.pillLabels.filter((pl) => {
+    const good = Array.isArray(pl) && reOk(pl[0]) && typeof pl[1] === "string";
+    if (!good) warn(`library.pillLabels has an entry that isn't ["pattern", "label"]; it was skipped.`);
+    return good;
+  });
+  for (const k of ["hunterScript", "hunterPlaybook"]) {
+    const h = cfg.library[k];
+    if (h && (typeof h.doc !== "string" || !reOk(h.heading))) {
+      warn(`library.${k} needs a doc and a valid heading pattern; using the default.`);
+      cfg.library[k] = clone(DEFAULT_CONFIG.library[k]);
+    }
+  }
+  /* sheet buttons: a doc id and a label; a key is one character that no built-in shortcut uses */
+  const TAKEN = ["n", "g", "h", "/", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+  const usedKeys = new Set();
+  cfg.library.sheetButtons = cfg.library.sheetButtons
+    .map((b, i) => {
+      if (!b || typeof b !== "object" || typeof b.doc !== "string" || !b.doc.trim()) {
+        warn(`library.sheetButtons entry ${i + 1} has no doc; it was skipped.`);
+        return null;
+      }
+      const out = { ...b, doc: b.doc.trim() };
+      if (typeof out.label !== "string" || !out.label.trim()) {
+        warn(`library.sheetButtons "${out.doc}" has no label; the doc id is used.`);
+        out.label = out.doc;
+      }
+      if (out.key == null || out.key === "") delete out.key;
+      else if (typeof out.key !== "string" || out.key.length !== 1) {
+        warn(`library.sheetButtons "${out.doc}" key should be one character; it has no key now.`);
+        delete out.key;
+      } else if (TAKEN.includes(out.key.toLowerCase()) || usedKeys.has(out.key.toLowerCase())) {
+        warn(`library.sheetButtons "${out.doc}" key "${out.key}" is already taken; it has no key now.`);
+        delete out.key;
+      } else usedKeys.add(out.key.toLowerCase());
+      return out;
+    })
+    .filter(Boolean);
   const lanes = cfg.lanes && typeof cfg.lanes === "object" ? cfg.lanes : {};
   cfg.lanes = { ...lanes };
   for (const sec of Object.keys(DEFAULT_CONFIG.lanes)) {
@@ -2308,7 +2403,18 @@ function checkConfig(cfg) {
       if (out.some((o) => o.id === l.id)) continue;
       /* a lane you list keeps the default's other settings (color, follow-up days, done) unless you set them */
       const base = dflt.find((d) => d.id === l.id);
-      out.push(base ? { ...base, ...l } : { ...l });
+      const lane = base ? { ...base, ...l } : { ...l };
+      /* follow-up days are a number ("7" works too) */
+      if (lane.follow != null) {
+        const n = Number(lane.follow);
+        if (typeof lane.follow === "boolean" || !isFinite(n) || n < 0) {
+          warn(`lanes.${sec} "${l.id}" has follow: ${JSON.stringify(lane.follow)}; it should be a number of days.`);
+          if (base && base.follow != null) lane.follow = base.follow;
+          else delete lane.follow;
+        } else lane.follow = n;
+      }
+      if (typeof lane.name !== "string" || !lane.name.trim()) lane.name = base ? base.name : l.id;
+      out.push(lane);
     }
     /* every default lane id is required: put a missing one back next to its neighbor */
     dflt.forEach((d, i) => {
@@ -2326,9 +2432,26 @@ function checkConfig(cfg) {
     });
     cfg.lanes[sec] = out;
   }
-  for (const sec of Object.keys(cfg.stale || {})) {
+  /* stale: null (or false) turns the "no change in N days" nudges off; another wrong type falls back to the default */
+  if (cfg.stale == null || cfg.stale === false) cfg.stale = {};
+  else if (kind(cfg.stale) !== "object") {
+    warn("stale should be an object; using the default.");
+    cfg.stale = clone(DEFAULT_CONFIG.stale);
+  }
+  for (const sec of Object.keys(cfg.stale)) {
     const r = cfg.stale[sec];
     if (!r) continue;
+    if (kind(r) !== "object") {
+      warn(`stale.${sec} should be an object; using the default rule.`);
+      cfg.stale[sec] = clone(DEFAULT_CONFIG.stale[sec]) || null;
+      continue;
+    }
+    if (!isFinite(Number(r.days))) {
+      warn(`stale.${sec}.days should be a number; using the default rule.`);
+      cfg.stale[sec] = clone(DEFAULT_CONFIG.stale[sec]) || null;
+      continue;
+    }
+    r.days = Number(r.days);
     const ids = (cfg.lanes[sec] || []).map((l) => l.id);
     if (!Array.isArray(r.lanes) || (r.close && !ids.includes(r.close))) {
       warn(`stale.${sec} names a lane that doesn't exist; using the default rule.`);
@@ -2609,6 +2732,71 @@ function normalize(src) {
   }
   return out;
 }
+/* ---- field-level three-way merge ----
+   For each record the page remembers the version the data file held when it was last read or written (its base).
+   When the file and this browser both changed a record since then, the two are merged field by field: a field only the
+   file changed takes the file's value, a field only this browser changed keeps yours, and a field both changed takes
+   the value from the record with the newer updatedAt. Without a base (a record never read from this file), the newer
+   record wins as a whole. A removal (deleted: true) is a field like any other, so it is never undone by a merge. */
+const canon = (v) =>
+  JSON.stringify(v === undefined ? null : v, (k, x) =>
+    x && typeof x === "object" && !Array.isArray(x)
+      ? Object.fromEntries(
+          Object.keys(x)
+            .sort()
+            .map((q) => [q, x[q]]),
+        )
+      : x,
+  );
+const eqv = (a, b) => a === b || canon(a) === canon(b);
+function sameRec(a, b) {
+  if (!a || !b) return a === b;
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) if (!eqv(a[k], b[k])) return false;
+  return true;
+}
+function merge3(cur, disk, base) {
+  if (!cur) return disk;
+  if (!disk || sameRec(cur, disk)) return cur;
+  if (!base) return ts(disk) > ts(cur) ? disk : cur;
+  const diskChanged = !sameRec(disk, base),
+    localChanged = !sameRec(cur, base);
+  if (!diskChanged) return cur;
+  if (!localChanged) return disk;
+  const diskNewer = ts(disk) > ts(cur);
+  const out = {};
+  for (const k of new Set([...Object.keys(base), ...Object.keys(cur), ...Object.keys(disk)])) {
+    if (k === "updatedAt" || k === "changedBy") continue;
+    const d = disk[k],
+      l = cur[k],
+      b = base[k];
+    const dc = !eqv(d, b),
+      lc = !eqv(l, b);
+    const v = dc && lc ? (diskNewer ? d : l) : dc ? d : l;
+    if (v !== undefined) out[k] = v;
+  }
+  /* later than both, so the merged record wins everywhere (other tabs, the file) */
+  out.updatedAt = new Date(Math.max(ts(cur), ts(disk)) + 1).toISOString();
+  const by = diskNewer ? disk.changedBy : cur.changedBy;
+  if (by !== undefined) out.changedBy = by;
+  return clean(out);
+}
+/* The base of every record: what the data file held at the last read or write ("c:id" -> record). */
+let fileRecs = Object.create(null);
+function setFileRecs(st) {
+  fileRecs = Object.create(null);
+  for (const c of COLLS) for (const id of Object.keys((st && st[c]) || {})) fileRecs[c + ":" + id] = st[c][id];
+}
+/* The bases of records this browser changed and hasn't written yet, kept with the browser copy, so edits made while
+   saving was paused still merge field by field with another tool's edits after a reload. */
+function unsyncedBases() {
+  const out = {};
+  for (const c of COLLS)
+    for (const id of Object.keys(store[c])) {
+      const b = fileRecs[c + ":" + id];
+      if (b && !sameRec(b, store[c][id])) out[c + ":" + id] = b;
+    }
+  return out;
+}
 function merge(a, b) {
   const out = emptyStore();
   for (const c of COLLS) {
@@ -2637,6 +2825,16 @@ function parseDataText(t) {
   if (i < 0 || j < i) throw new Error("no data");
   return JSON.parse(t.slice(i, j + 1));
 }
+/* The page loads board_data.js with a <script> tag, so anything in it besides the data would run as code. Read from the
+   folder, the file is only ever JSON.parse'd; this checks that nothing but comments surrounds `window.BOARD_DATA = {…};`. */
+function wrapperOk(t) {
+  const k = t.indexOf("window.BOARD_DATA");
+  const i = t.indexOf("{", k),
+    j = t.lastIndexOf("}");
+  if (k < 0 || i < 0 || j < i) return false;
+  const bare = (x) => x.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  return /^\s*window\.BOARD_DATA\s*=\s*$/.test(bare(t.slice(0, i))) && /^\s*;?\s*$/.test(bare(t.slice(j + 1)));
+}
 function serialize(st) {
   return (
     "// Job Search Organizer data. The page and any tool you trust (a script, an AI assistant) may edit this file.\n" +
@@ -2654,7 +2852,23 @@ try {
   const raw = lsGet("board", null);
   if (raw) localCopy = normalize(JSON.parse(raw));
 } catch (e) {}
-let store = merge(merge(emptyStore(), fileCopy || emptyStore()), localCopy || emptyStore());
+let savedBases = {};
+try {
+  const raw = lsGet("bases", null);
+  if (raw) savedBases = JSON.parse(raw) || {};
+} catch (e) {}
+/* this browser's copy merged with the file as the page loaded it (field by field where a base was kept) */
+let store = merge(emptyStore(), localCopy || emptyStore());
+if (fileCopy)
+  for (const c of COLLS)
+    for (const id of Object.keys(fileCopy[c])) {
+      const b = savedBases[c + ":" + id];
+      store[c][id] = merge3(
+        store[c][id],
+        fileCopy[c][id],
+        b && typeof b === "object" ? normalize({ [c]: { [id]: b } })[c][id] : null,
+      );
+    }
 /* What the data file is known to hold: changes newer than this exist only in this browser. */
 let fileBase = Object.create(null);
 function setFileBase(st) {
@@ -2662,6 +2876,7 @@ function setFileBase(st) {
   for (const c of COLLS) for (const id of Object.keys((st && st[c]) || {})) fileBase[c + ":" + id] = ts(st[c][id]);
 }
 setFileBase(fileCopy);
+setFileRecs(fileCopy);
 function unsyncedCount() {
   let n = 0;
   for (const c of COLLS)
@@ -2836,6 +3051,7 @@ let dirHandle = null,
 let localOk = true;
 function persistLocal() {
   localOk = lsSet("board", JSON.stringify(store));
+  lsSet("bases", JSON.stringify(unsyncedBases()));
   return localOk;
 }
 let gen = 0;
@@ -2866,16 +3082,30 @@ async function readFileInto() {
     extras = Object.create(null);
     keepExtras(raw);
     const n = normalize(raw);
+    const next = merge(store, emptyStore());
     for (const c of COLLS)
       for (const id of Object.keys(n[c])) {
         const k = c + ":" + id;
         fileBase[k] = Math.max(fileBase[k] || 0, ts(n[c][id]));
+        next[c][id] = merge3(next[c][id], n[c][id], fileRecs[k]);
+        fileRecs[k] = n[c][id];
       }
-    store = merge(store, n);
+    store = next;
+    checkWrapper(t);
     return "ok";
   } catch (e) {
     return "bad";
   }
+}
+let wrapperWarned = "";
+function checkWrapper(t) {
+  if (wrapperOk(t) || wrapperWarned === t) return;
+  wrapperWarned = t;
+  const m = `${DATA_FILE} holds something besides the data: text before or after window.BOARD_DATA = {…};. The page loads that file as a script, so check which tool wrote it. The next save writes a clean copy.`;
+  try {
+    console.warn(m);
+  } catch (e) {}
+  showToast(m);
 }
 async function writeFile() {
   if (!dirHandle || !canWrite) {
@@ -2900,11 +3130,13 @@ async function writeFile() {
       await w.write(serialize(store));
       await w.close();
       setFileBase(store);
+      setFileRecs(store);
       persistLocal();
       lastSaved = new Date();
       saveErr = "";
       if (gen === g) dirty = false;
       setTimeout(fileJobs, 50);
+      myResume();
     }
   } catch (e) {
     if (e && e.name === "NotFoundError") {
@@ -2982,6 +3214,24 @@ function splitFolder(f) {
     ? { stage: p[0], name: p.slice(1).join("/") }
     : { stage: "", name: String(f || "") };
 }
+/* Folders at the top of the board that are never a job's folder (a job's "folder" naming one of them would move it). */
+const RESERVED_DIRS = ["Library", "Job notes", "backups"];
+const sameName = (a, b) => String(a).normalize("NFC").toLowerCase() === String(b).normalize("NFC").toLowerCase();
+/* Why a job's "folder" value can't be a job folder, or "" when it can. Checked before anything is moved or linked:
+   it must be a relative path inside the board, not a stage folder, Library, Job notes or backups, nor the board itself. */
+function badFolder(f) {
+  if (typeof f !== "string" || !f.trim()) return "it's empty";
+  if (/^[\\/]|^[A-Za-z]:|^~/.test(f)) return "it's an absolute path";
+  if (f.includes("\\")) return "it has a backslash (use / between folders)";
+  const segs = f.split("/");
+  if (segs.some((x) => !x.trim() || x === "." || x === "..")) return "it has an empty, . or .. part";
+  if (RESERVED_DIRS.some((r) => sameName(r, segs[0]))) return `it points into ${segs[0]}/`;
+  if (segs.length === 1 && /\.(js|html|md)$/i.test(segs[0])) return "it names a file";
+  const { name } = splitFolder(f);
+  const first = name.split("/")[0];
+  if (STAGE_DIRS.some((d) => sameName(d, f) || sameName(d, first))) return "it names a stage folder, not a job folder";
+  return "";
+}
 async function dirAt(path, create) {
   let d = dirHandle;
   for (const part of String(path).split("/").filter(Boolean))
@@ -2996,8 +3246,13 @@ async function hasDir(path) {
     return false;
   }
 }
-async function copyFolder(src, dst) {
-  for await (const [n, h] of src.entries()) {
+/* Copies src into dst. The list of entries is taken first, and a folder that is the destination itself is skipped, so a
+   copy can never walk into the copy it is making. */
+async function copyFolder(src, dst, root) {
+  root = root || dst;
+  const list = [];
+  for await (const e of src.entries()) list.push(e);
+  for (const [n, h] of list) {
     if (h.kind === "file") {
       const f = await h.getFile();
       const o = await dst.getFileHandle(n, { create: true });
@@ -3005,10 +3260,19 @@ async function copyFolder(src, dst) {
       await w.write(f);
       await w.close();
       if ((await (await dst.getFileHandle(n)).getFile()).size !== f.size) throw new Error("copy check failed: " + n);
-    } else await copyFolder(h, await dst.getDirectoryHandle(n, { create: true }));
+    } else {
+      let self = false;
+      try {
+        self = await h.isSameEntry(root);
+      } catch (e) {}
+      if (self) throw new Error("a folder can't be copied into itself");
+      await copyFolder(h, await dst.getDirectoryHandle(n, { create: true }), root);
+    }
   }
 }
+const inside = (to, from) => to === from || to.startsWith(from + "/");
 async function moveDir(from, to) {
+  if (inside(to, from) || inside(from, to)) throw new Error("a folder can't move into itself");
   const parts = to.split("/"),
     name = parts.pop();
   const src = await dirAt(from);
@@ -3025,23 +3289,54 @@ async function moveDir(from, to) {
     fname = fp.pop();
   await (await dirAt(fp.join("/"))).removeEntry(fname, { recursive: true });
 }
-async function fileJobs() {
+/* Filing works on the jobs whose stage or folder changed since they were last filed (one save never lists every folder).
+   fileJobs(true) checks every job: at start-up, when another tool changed the data file, and when a panel closes after
+   such a change. Removed jobs' folders are checked for deletion once a day. */
+const filedSig = new Map();
+const fileSig = (x) => [x.deleted ? 1 : 0, laneKey("jobs", x), x.folder || ""].join("|");
+let purgedDay = "",
+  fileFull = false;
+const badWarned = new Set();
+async function fileJobs(full) {
   if (!dirHandle || !canWrite || VIEW_ONLY) return;
+  if (full === true) fileFull = true;
   if (filing) {
     fileAgain = true;
     return;
   }
   filing = true;
+  const all = fileFull;
+  fileFull = false;
+  const purge = all || purgedDay !== TODAY();
   const moved = [],
-    failed = [];
+    failed = [],
+    bad = [],
+    rescan = [];
   try {
     for (const [id, x] of Object.entries(store.jobs)) {
-      if (!x || !x.folder) continue;
+      if (!x || !x.folder) {
+        filedSig.delete(id);
+        continue;
+      }
+      const sig = fileSig(x);
+      const removedWaiting = x.deleted && splitFolder(x.folder).stage === REMOVED_DIR;
+      if (!all && filedSig.get(id) === sig && !(purge && removedWaiting)) continue;
+      filedSig.set(id, sig);
+      const why = badFolder(x.folder);
+      if (why) {
+        const k = id + "|" + x.folder;
+        if (!badWarned.has(k)) {
+          badWarned.add(k);
+          bad.push(`${x.company || id} (“${x.folder}”: ${why})`);
+        }
+        continue;
+      }
       const want = x.deleted ? REMOVED_DIR : STAGE_DIR[laneKey("jobs", x)];
       if (!want) continue;
       const { stage, name } = splitFolder(x.folder);
       /* A removed card's files wait in the removed folder (Restore brings them back), then are deleted for good. */
-      if (x.deleted && stage === REMOVED_DIR) {
+      if (removedWaiting) {
+        if (!purge) continue;
         const since = Date.parse(x.removedAt || x.updatedAt || "");
         if (since && Date.now() - since > PURGE_DAYS * 864e5) {
           try {
@@ -3054,6 +3349,7 @@ async function fileJobs() {
           }
           const r = store.jobs[id];
           store.jobs[id] = { ...r, folder: null, filesDeletedAt: nowIso(), updatedAt: stamp(r), changedBy: "you" };
+          filedSig.delete(id);
           persist();
         }
         continue;
@@ -3063,7 +3359,7 @@ async function fileJobs() {
       try {
         let from = null;
         for (const c of [x.folder, ...STAGE_DIRS.map((s) => s + "/" + name)])
-          if (c !== target && (await hasDir(c))) {
+          if (c !== target && !inside(target, c) && !inside(c, target) && (await hasDir(c))) {
             from = c;
             break;
           }
@@ -3081,17 +3377,25 @@ async function fileJobs() {
         }
         const r = store.jobs[id];
         store.jobs[id] = { ...r, folder: target, updatedAt: stamp(r), changedBy: "you" };
+        filedSig.set(id, fileSig(store.jobs[id]));
+        rescan.push(target);
         persist();
       } catch (e) {
         failed.push(x.company || name);
       }
     }
+    if (purge) purgedDay = TODAY();
   } finally {
     filing = false;
   }
-  if (moved.length || failed.length) render();
-  scanFolders(true);
-  if (failed.length && !lastUndo)
+  if (moved.length || failed.length || bad.length) render();
+  /* only the folders that moved are listed again (every folder is listed when you come back to the window) */
+  if (rescan.length) scanFolders(true, rescan);
+  if (bad.length)
+    showToast(
+      `Didn't move the folder for ${bad.join("; ")}. A job's "folder" must be its own folder, such as “${STAGE_DIR.todo}/Acme - Engineer”. Nothing was moved.`,
+    );
+  else if (failed.length && !lastUndo)
     showToast(`Couldn't file the folder for ${failed.join(", ")}. Nothing was lost; check the stage folders.`);
   else if (moved.length > 1 && !lastUndo) showToast(`Filed ${moved.length} job folders by stage.`);
   if (fileAgain) {
@@ -3159,8 +3463,10 @@ async function connectFolder() {
     dirHandle = h;
     canWrite = true;
     await idbSet("dir", h);
+    const warned = wrapperWarned;
     await writeFile();
-    if (!saveErr)
+    /* a warning about the data file (see checkWrapper) stays up instead of this message */
+    if (!saveErr && wrapperWarned === warned)
       showToast(
         fresh
           ? `Saving is on. ${DATA_FILE} was created in “${h.name}”; keep this page in that folder.`
@@ -4055,23 +4361,32 @@ function renderBoard(v, sec) {
   v.append(tabs, board);
 }
 /* A job's tailored résumé and cover letter live in its folder (see filing). noResume / noLetter mark a package without one;
-   resumeFile / letterFile override the file names from the settings. */
+   resumeFile / letterFile override the file names from the settings. A folder value that isn't a job folder inside
+   the board (see badFolder) gets no links. */
+const docName = (x, k) =>
+  String(x[k === "resume" ? "resumeFile" : "letterFile"] || CONFIG.files[k === "resume" ? "resume" : "coverLetter"]);
+const encPath = (p) => String(p).split("/").map(encodeURIComponent).join("/");
 function docsOf(x) {
-  if (!x || !x.folder) return { resume: null, letter: null };
-  const base = String(x.folder).split("/").map(encodeURIComponent).join("/") + "/";
+  if (!x || !x.folder || badFolder(x.folder)) return { resume: null, letter: null };
+  const base = encPath(x.folder) + "/";
+  const ok = (n) => !n.split("/").some((q) => !q || q === "." || q === "..");
+  const r = docName(x, "resume"),
+    l = docName(x, "letter");
   return {
-    resume: x.noResume ? null : base + encodeURIComponent(x.resumeFile || CONFIG.files.resume),
-    letter: x.noLetter ? null : base + encodeURIComponent(x.letterFile || CONFIG.files.coverLetter),
+    resume: x.noResume || !ok(r) ? null : base + encPath(r),
+    letter: x.noLetter || !ok(l) ? null : base + encPath(l),
   };
 }
 /* With saving on, the page also checks that the PDFs are really in the folder. Each folder is listed once and cached,
-   and listed again when you come back to the window and after job folders are filed, so drawing the board never waits
-   for the disk. Without folder access the tag only reflects the fields, as before. */
-const folderFiles = new Map(); // folder path -> Set of file names, or null when the folder isn't there
+   and listed again when you come back to the window and after a job folder moves, so drawing the board never waits
+   for the disk. Without folder access the tag only reflects the fields, as before. Names are compared the way macOS
+   and Windows do (case and Unicode form ignored). */
+const folderFiles = new Map(); // folder path -> Set of normalized file names, null when the folder isn't there, "?" unknown
+const fileKey = (n) => String(n).normalize("NFC").toLowerCase();
 let folderScanT = null,
   folderScanning = false,
   folderScanAgain = false;
-async function scanFolders(fresh) {
+async function scanFolders(fresh, only) {
   if (!dirHandle || !canWrite || VIEW_ONLY) return;
   if (folderScanning) {
     folderScanAgain = true;
@@ -4081,9 +4396,10 @@ async function scanFolders(fresh) {
   let changed = false;
   try {
     const want = new Set(
-      Object.values(live("jobs"))
-        .map((x) => x.folder)
-        .filter((f) => typeof f === "string" && f),
+      only ||
+        Object.values(live("jobs"))
+          .map((x) => x.folder)
+          .filter((f) => typeof f === "string" && f && !badFolder(f)),
     );
     for (const f of want) {
       if (!fresh && folderFiles.has(f)) continue;
@@ -4091,14 +4407,19 @@ async function scanFolders(fresh) {
       try {
         const d = await dirAt(f);
         names = new Set();
-        for await (const [n, h] of d.entries()) if (h.kind === "file") names.add(n);
+        for await (const [n, h] of d.entries()) if (h.kind === "file") names.add(fileKey(n));
       } catch (e) {
-        if (!e || e.name !== "NotFoundError") continue; // can't read it right now: keep what we knew
+        /* can't read it right now: keep what we knew, or mark it unknown so it isn't tried on every redraw */
+        if (!e || e.name !== "NotFoundError") {
+          if (!folderFiles.has(f)) folderFiles.set(f, "?");
+          continue;
+        }
       }
       const old = folderFiles.get(f);
       const same =
         folderFiles.has(f) &&
-        (old === names || (old && names && old.size === names.size && [...names].every((n) => old.has(n))));
+        (old === names ||
+          (old && old !== "?" && names && old.size === names.size && [...names].every((n) => old.has(n))));
       folderFiles.set(f, names);
       if (!same) changed = true;
     }
@@ -4114,15 +4435,25 @@ async function scanFolders(fresh) {
 }
 const fileChecks = () => !!(dirHandle && canWrite && !VIEW_ONLY);
 function docsTag(x, ln) {
+  if (x.folder && badFolder(x.folder)) {
+    if (laneOf("jobs", ln).done) return null;
+    return el("span", {
+      class: "tag docmiss",
+      title: `"folder" is “${x.folder}”: ${badFolder(x.folder)}. Set it to the job's own folder.`,
+      text: "✗ Check the folder path",
+    });
+  }
   const d = docsOf(x);
   if (fileChecks() && x.folder) {
     if (!folderFiles.has(x.folder)) {
       clearTimeout(folderScanT);
       folderScanT = setTimeout(() => scanFolders(false), 0);
-    } else {
+    } else if (folderFiles.get(x.folder) !== "?") {
       const have = folderFiles.get(x.folder);
-      const rMiss = !!d.resume && !(have && have.has(x.resumeFile || CONFIG.files.resume));
-      const lMiss = !!d.letter && !(have && have.has(x.letterFile || CONFIG.files.coverLetter));
+      /* a file in a subfolder of the job's folder isn't listed here, so it isn't checked */
+      const miss = (k) => !docName(x, k).includes("/") && !(have && have.has(fileKey(docName(x, k))));
+      const rMiss = !!d.resume && miss("resume");
+      const lMiss = !!d.letter && miss("letter");
       if (rMiss || lMiss) {
         if (laneOf("jobs", ln).done) return null;
         const what = rMiss && lMiss ? "Résumé and cover letter files" : rMiss ? "Résumé file" : "Cover letter file";
@@ -4656,11 +4987,15 @@ function refreshDrawer() {
   d.querySelectorAll("[data-fkey]").forEach((n) => {
     if (pending[n.dataset.fkey] || (n === a && !untouched(n))) return;
     const v = fieldValue(n, x);
-    if (n.dataset.fkind === "ref" && v && ![...n.options].some((o) => o.value === v)) {
-      const p = get("people", v);
-      n.lastElementChild.before(
-        el("option", { value: v, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
-      );
+    /* a list that has no option for the new value gets one (a person added since, or a call type that isn't in the
+       settings), so the list shows the stored value instead of a blank that a later edit would save */
+    if (n.tagName === "SELECT" && v && ![...n.options].some((o) => o.value === v)) {
+      if (n.dataset.fkind === "ref") {
+        const p = get("people", v);
+        n.lastElementChild.before(
+          el("option", { value: v, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
+        );
+      } else n.append(el("option", { value: v, text: v }));
     }
     if (n.value === v) return;
     n.value = v;
@@ -5071,7 +5406,7 @@ function closeDrawer() {
   /* changes picked up from the folder while the panel was open: file the moved job folders now */
   if (fileOnClose) {
     fileOnClose = false;
-    setTimeout(fileJobs, 50);
+    setTimeout(() => fileJobs(true), 50);
   }
   if (back && get(back.sec, back.id)) {
     openDrawer(back.sec, back.id);
@@ -5513,11 +5848,8 @@ function blocks(lines) {
   return h;
 }
 const ASK_RE = /\{\.ask\}/;
-const stripAsk = (t) =>
-  String(t)
-    .replace(/\s*\{\.ask\}\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+/* split/join, not a regex with \s* on both sides: that one takes seconds on a heading with a long run of spaces */
+const stripAsk = (t) => String(t).split("{.ask}").join(" ").replace(/\s+/g, " ").trim();
 /* A doc = optional front matter, "# title", "## sections" (cards), "### questions" (blocks).
    With `split: bold` in the front matter, a whole-line **bold** also starts a question (for long answer docs). */
 function parse(md, opts) {
@@ -5584,7 +5916,9 @@ const MINE = (k) =>
 const ASKBOX = (k) =>
   `<details class="mine ask" data-k="${esc(k)}" data-label="Their answer" open><summary>Their answer</summary><textarea rows="3" placeholder="Type what they said. It saves to Library › My_answers.md."></textarea></details>`;
 /* opts.mineKey turns on the answer boxes (saved as "<mineKey>::<question>"); opts.ask turns {.ask} questions into
-   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped). */
+   "Their answer" boxes (prep sheets only: in a guide the marker is just dropped). The same question twice in one doc
+   gets its own box: the first keeps the plain key, a later one "<mineKey>::<question> #2" (#3…). The keys of every box
+   are returned in `keys`. */
 function renderDoc(md, prefix, opts) {
   opts = opts || {};
   const d = parse(md, opts);
@@ -5595,27 +5929,42 @@ function renderDoc(md, prefix, opts) {
     used[s] = 1;
     return s;
   };
+  const keys = [],
+    kseen = {};
+  const keyOf = (t) => {
+    const base = opts.mineKey + "::" + normK(t);
+    kseen[base] = (kseen[base] || 0) + 1;
+    return kseen[base] > 1 ? base + " #" + kseen[base] : base;
+  };
+  const box = (k, ask) => {
+    keys.push(k);
+    return ask ? ASKBOX(k) : MINE(k);
+  };
   let h = d.intro.some((x) => x.trim()) ? `<div class="hintro">${blocks(d.intro)}</div>` : "";
   const nav = [];
-  const hasMine = (t) => !!(opts.mineKey && (/✎/.test(t) || (MY[opts.mineKey + "::" + normK(t)] || "").trim()));
+  const hasMine = (t, k) => !!(opts.mineKey && (/✎/.test(t) || (MY[k] || "").trim()));
   for (const s of d.secs) {
     const id = sid(s.title);
     nav.push({ id, title: s.title, pay: s.pay });
     h += `<section class="hs${s.pay ? " pay" : ""}" id="${id}" data-title="${esc(s.title)}"><h3 class="hs-h"><span>${inline(s.title)}</span>${s.pay ? PAYNOTE() : ""}${COPY}</h3>${blocks(s.pre)}`;
-    if (!s.qs.length && hasMine(s.title)) h += MINE(opts.mineKey + "::" + normK(s.title));
-    for (const qq of s.qs)
-      h += `<div class="hq${qq.sub ? " sub" : ""}${qq.pay ? " pay" : ""}" id="${sid(qq.title)}"><h4><span>${inline(qq.title)}</span>${COPY}</h4>${blocks(qq.lines)}${
-        qq.ask && opts.ask && opts.mineKey
-          ? ASKBOX(opts.mineKey + "::" + normK(qq.title))
-          : hasMine(qq.title)
-            ? MINE(opts.mineKey + "::" + normK(qq.title))
-            : ""
-      }</div>`;
+    if (!s.qs.length && opts.mineKey) {
+      const k = keyOf(s.title);
+      if (hasMine(s.title, k)) h += box(k);
+    }
+    for (const qq of s.qs) {
+      let bx = "";
+      if (opts.mineKey) {
+        const k = keyOf(qq.title);
+        if (qq.ask && opts.ask) bx = box(k, true);
+        else if (hasMine(qq.title, k)) bx = box(k);
+      }
+      h += `<div class="hq${qq.sub ? " sub" : ""}${qq.pay ? " pay" : ""}" id="${sid(qq.title)}"><h4><span>${inline(qq.title)}</span>${COPY}</h4>${blocks(qq.lines)}${bx}</div>`;
+    }
     h += `</section>`;
   }
   if (!d.secs.length && h)
     h = `<section class="hs" id="${prefix}-all" data-title="${esc(d.title || "")}">${h.replace(/^<div class="hintro">|<\/div>$/g, "")}</section>`;
-  return { fm: d.fm, title: d.title, html: h, nav };
+  return { fm: d.fm, title: d.title, html: h, nav, keys };
 }
 /* One "## section" of a guide, found by a heading pattern (used by the headhunter sheet). */
 function sectionHtml(docId, re, id) {
@@ -5734,16 +6083,17 @@ function wireCopy(root) {
         }, 1100);
       };
       try {
-        navigator.clipboard.writeText(txt).then(done, () => copyFallback(txt, done));
+        navigator.clipboard.writeText(txt).then(done, () => copyFallback(txt, done, b));
       } catch (_) {
-        copyFallback(txt, done);
+        copyFallback(txt, done, b);
       }
       return;
     }
     if ((e.target.closest(".hs.pay") || e.target.closest(".hq.pay")) && payHidden()) showPay(true);
   });
 }
-function copyFallback(t, done) {
+/* `btn` is the Copy button (the temporary text box takes the focus, so it can't be found by focus afterwards) */
+function copyFallback(t, done, btn) {
   const ta = document.createElement("textarea");
   ta.value = t;
   ta.style.position = "fixed";
@@ -5757,10 +6107,12 @@ function copyFallback(t, done) {
   ta.remove();
   if (ok) done();
   else {
-    const bb = $q(".hcopy.ok,.hcopy:focus");
+    const bb = btn || $q(".hcopy.ok,.hcopy:focus");
     if (bb) {
       const o = bb.textContent;
-      bb.textContent = "Press ⌘C";
+      bb.textContent = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "")
+        ? "Press ⌘C"
+        : "Press Ctrl+C";
       setTimeout(() => (bb.textContent = o), 1800);
     }
   }
@@ -5933,21 +6285,39 @@ async function scanPrep(opts) {
 /* ================= "My version" answers (Library/My_answers.md, written only by this page) =================
    Every ✎ question in a guide or prep sheet gets a box for your own wording, and every {.ask} question on a prep
    sheet a "Their answer" box. Prep sheet answers are keyed "prep:<job id>::<question>". Answers are kept in this
-   browser at once and written to the file about a second after you stop typing. */
-const MYLK = "myAnswers";
+   browser at once and written to the file about a second after you stop typing.
+   The file is never written without reading it first: every write reads the file, merges it with this browser's
+   answers and only then writes. Merge rule: every key from both sides is kept; a box you changed since the last read
+   wins; any other key takes the file's value. If the file can't be read (no permission yet, a sync client holding it),
+   nothing is written: the answers wait in this browser and are written once the file can be read. */
+const MYLK = "myAnswers",
+  MYDIRTY = "myAnswersDirty";
 let MY = {},
   myLoaded = false,
-  myTimer = null;
+  myTimer = null,
+  myBusy = false,
+  myAgain = false;
+/* keys changed in this browser since the file was last read and written (kept across reloads until written) */
+let myDirty = new Set();
 const normK = (k) =>
   String(k)
     .replace(/\s*[✎☐]\s*/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-try {
-  MY = JSON.parse(lsGet(MYLK, "{}")) || {};
-} catch (e) {
-  MY = {};
-}
+const myJson = (name, fallback) => {
+  try {
+    const v = JSON.parse(lsGet(name, "null"));
+    return v && typeof v === "object" ? v : fallback;
+  } catch (e) {
+    return fallback;
+  }
+};
+MY = myJson(MYLK, {});
+myDirty = new Set(Array.isArray(myJson(MYDIRTY, null)) ? myJson(MYDIRTY, []) : []);
+const myKeep = () => {
+  lsSet(MYLK, JSON.stringify(MY));
+  lsSet(MYDIRTY, JSON.stringify([...myDirty]));
+};
 /* A line in an answer that starts with "## " is written as "\## " so it is not read back as a new question
    (a line that already starts with backslashes and "## " gets one more); reading removes one backslash. */
 const myEsc = (v) => v.replace(/^(\\*)## /gm, "\\$1## ");
@@ -5973,43 +6343,119 @@ function myFromMd(t) {
   if (k) o[k] = buf.join("\n").trim();
   return o;
 }
-async function myLoad() {
-  if (myLoaded || !FS.ok()) return;
-  const r = await FS.read(MYPATH);
-  myLoaded = true;
-  if (r) {
-    const disk = myFromMd(r.text);
-    let changed = false;
-    for (const [k, v] of Object.entries(disk))
-      if (!MY[k] && v) {
-        MY[k] = v;
-        changed = true;
-      }
-    if (changed) {
-      lsSet(MYLK, JSON.stringify(MY));
-      $qa("details.mine").forEach(fillMine);
-    }
+/* Merge what the file holds into MY (see the rule at the top). Returns true when MY changed. */
+function myMerge(disk) {
+  const out = {};
+  for (const [k, v] of Object.entries(disk)) if (v) out[k] = v;
+  for (const [k, v] of Object.entries(MY)) {
+    if (myDirty.has(k)) out[k] = v;
+    else if (!(k in out) && v && v.trim()) out[k] = v; // only in this browser: kept
   }
+  const changed = JSON.stringify(out) !== JSON.stringify(MY);
+  MY = out;
+  return changed;
+}
+const myFill = () => {
+  $qa("details.mine").forEach(fillMine);
+  try {
+    document.dispatchEvent(new Event("jso-answers"));
+  } catch (e) {}
+};
+/* After a failed read or write, try again in a few seconds (while saving is on). */
+let myRetryT = null;
+const myRetry = () => {
+  clearTimeout(myRetryT);
+  myRetryT = setTimeout(myResume, 5000);
+};
+/* Read the file and merge it in. A read that fails ("can't read right now") changes nothing and is tried again later. */
+async function myLoad() {
+  if (!FS.ok()) return false;
+  if (myBusy) {
+    myAgain = true;
+    return false;
+  }
+  myBusy = true;
+  try {
+    const r = await FS.read(MYPATH);
+    if (r === false) {
+      myRetry();
+      return false;
+    }
+    const changed = myMerge(r ? myFromMd(r.text) : {});
+    myLoaded = true;
+    myKeep();
+    if (changed) myFill();
+  } finally {
+    myBusy = false;
+  }
+  if (myDirty.size || myAgain) {
+    myAgain = false;
+    myWrite();
+  }
+  return true;
+}
+/* Read, merge, then write. Nothing is written when the file can't be read first. */
+async function myWrite() {
+  if (!FS.ok()) return false;
+  if (myBusy) {
+    myAgain = true;
+    return false;
+  }
+  myBusy = true;
+  let ok = false;
+  try {
+    const r = await FS.read(MYPATH);
+    if (r === false) {
+      myRetry();
+      return false;
+    }
+    const onDisk = r ? myFromMd(r.text) : {};
+    const changed = myMerge(onDisk);
+    myLoaded = true;
+    const sent = new Set(myDirty);
+    const text = myToMd();
+    /* write only when this browser has something the file lacks: an edit, or an answer only kept here */
+    const needed = sent.size > 0 || Object.entries(MY).some(([k, v]) => v && v.trim() && onDisk[k] !== v);
+    if (needed && (!r || r.text !== text)) await FS.write(MYPATH, text);
+    for (const k of sent) if (myDirty.has(k)) myDirty.delete(k);
+    /* edits typed while the write ran stay marked and are written next time */
+    for (const [k, v] of Object.entries(MY)) if (!v || !v.trim()) delete MY[k];
+    myKeep();
+    if (changed) myFill();
+    ok = true;
+  } catch (e) {
+    myKeep();
+    myRetry();
+  } finally {
+    myBusy = false;
+  }
+  if (myAgain) {
+    myAgain = false;
+    myWrite();
+  }
+  return ok;
 }
 function mySave() {
-  lsSet(MYLK, JSON.stringify(MY));
+  myKeep();
   clearTimeout(myTimer);
-  myTimer = setTimeout(async () => {
+  myTimer = setTimeout(() => {
     myTimer = null;
-    if (!FS.ok()) return;
-    try {
-      if (!myLoaded) await myLoad();
-      await FS.write(MYPATH, myToMd());
-    } catch (e) {}
+    myWrite();
   }, 900);
+}
+/* Called when saving to the folder starts or comes back: read the file, and write answers that waited in this browser. */
+function myResume() {
+  if (!FS.ok()) return;
+  if (myDirty.size) myWrite();
+  else if (!myLoaded) myLoad();
 }
 const myFlush = () => {
   if (myTimer) {
     clearTimeout(myTimer);
     myTimer = null;
-    lsSet(MYLK, JSON.stringify(MY));
-    if (FS.ok()) FS.write(MYPATH, myToMd()).catch(() => {});
   }
+  myKeep();
+  if (myDirty.size) myWrite();
 };
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") myFlush();
@@ -6026,6 +6472,12 @@ function fillMine(det) {
   if (filled && !det.dataset.filled) det.open = true;
   det.dataset.filled = filled ? "1" : "";
 }
+/* Change one answer (an empty value removes it from the file on the next write). */
+function mySet(k, v) {
+  MY[k] = v;
+  myDirty.add(k);
+  mySave();
+}
 function wireMine(root) {
   $qa("details.mine", root).forEach((det) => {
     fillMine(det);
@@ -6033,12 +6485,11 @@ function wireMine(root) {
     if (ta.__w) return;
     ta.__w = 1;
     ta.addEventListener("input", () => {
-      MY[det.dataset.k] = ta.value;
+      mySet(det.dataset.k, ta.value);
       det.querySelector("summary").textContent = mineLabel(det, ta.value.trim());
-      mySave();
     });
   });
-  myLoad();
+  if (!myLoaded) myLoad();
 }
 
 /* ---- 83-notes-pad.js ---- */
@@ -6366,12 +6817,13 @@ function callRow(sec, id, x, strip, summary) {
   };
   const type = mk("select");
   type.setAttribute("aria-label", "Call type");
+  /* value= keeps the label exactly (an option without one collapses repeated spaces) */
   type.innerHTML =
     '<option value="">Call type…</option>' +
     CALLTYPES.map((t) => t.label)
       /* a type that was renamed in the settings since this call was booked stays selectable, so it isn't cleared */
       .concat(x.callType && !CALLTYPES.some((t) => t.label === x.callType) ? [x.callType] : [])
-      .map((t) => `<option${x.callType === t ? " selected" : ""}>${esc(t)}</option>`)
+      .map((t) => `<option value="${esc(t)}"${x.callType === t ? " selected" : ""}>${esc(t)}</option>`)
       .join("");
   const when = mk("input");
   when.type = "datetime-local";
@@ -6387,16 +6839,22 @@ function callRow(sec, id, x, strip, summary) {
   link.placeholder = "Meeting link or phone";
   link.value = x.callLink || "";
   link.setAttribute("aria-label", "Meeting link");
-  const commit = () => {
+  /* Only the field you changed is written (the change event says which), so a field the panel shows out of date can
+     never overwrite the stored value, and a stored time in another format is left alone until you edit it. */
+  const keyOf = new Map([
+    [type, "callType"],
+    [when, "callAt"],
+    [who, "callWith"],
+    [link, "callLink"],
+  ]);
+  const commit = (src) => {
     const cur = get(sec, id);
     if (!cur) return;
-    /* only the fields you changed are written; a stored time in another format is left alone until you edit it */
-    const now = { callType: type.value, callAt: when.value, callWith: who.value, callLink: link.value };
-    const patch = {};
-    for (const k of Object.keys(now)) {
-      const was = k === "callAt" ? toLocalInput(cur.callAt) : cur[k] || "";
-      if (now[k] !== was) patch[k] = now[k];
-    }
+    const k = keyOf.get(src);
+    if (!k) return;
+    const v = src.value;
+    const was = k === "callAt" ? toLocalInput(cur.callAt) : cur[k] || "";
+    const patch = v !== was ? { [k]: v } : {};
     if (!Object.keys(patch).length) return;
     const typeChanged = "callType" in patch,
       dateChanged = "callAt" in patch;
@@ -6404,7 +6862,8 @@ function callRow(sec, id, x, strip, summary) {
     render();
     const laneBefore = laneKey(sec, get(sec, id));
     let followed = false;
-    if (get(sec, id).callAt && (dateChanged || typeChanged)) {
+    /* picking the blank type ("Call type…") clears it without moving the card */
+    if (get(sec, id).callAt && (dateChanged || (typeChanged && patch.callType))) {
       focusWithNext = true;
       autoMove(sec, id, get(sec, id).callType);
       followed = setFollowAfter(sec, id, get(sec, id).callAt);
@@ -6421,7 +6880,7 @@ function callRow(sec, id, x, strip, summary) {
       summary.textContent = get(sec, id).callAt ? "Edit the call" : "Book a call";
     }
   };
-  [type, when, who, link].forEach((e) => e.addEventListener("change", commit));
+  [type, when, who, link].forEach((e) => e.addEventListener("change", () => commit(e)));
   /* so the panel can bring them up to date after another tool changes the call (see refreshDrawer) */
   [
     [type, "callType"],
@@ -6605,6 +7064,26 @@ function hunterSections(id, x) {
   }
   return { html: h, nav };
 }
+/* Answers saved for this job whose question is no longer on the sheet (the assistant reworded or removed it): listed,
+   folded, at the end of the sheet, to copy or remove. `keys` are the answer boxes the sheet has now. */
+function earlierAnswers(id, keys) {
+  const pre = "prep:" + id + "::";
+  const have = new Set(keys);
+  return Object.entries(MY)
+    .filter(([k, v]) => k.startsWith(pre) && !have.has(k) && v && v.trim())
+    .sort((a, b) => a[0].localeCompare(b[0]));
+}
+function earlierHtml(id, keys) {
+  const list = earlierAnswers(id, keys);
+  if (!list.length) return "";
+  const pre = "prep:" + id + "::";
+  return `<section class="hs earlier" id="p-earlier" data-title="Saved answers from earlier versions"><details class="fold"><summary>Saved answers from earlier versions (${list.length})</summary><p class="muted">Answers you typed for questions that are no longer on this sheet (the question was reworded or removed). They stay in Library › My_answers.md until you remove them.</p>${list
+    .map(
+      ([k, v]) =>
+        `<div class="hq earlier" data-ek="${esc(k)}"><h4><span>${esc(k.slice(pre.length))}</span></h4><blockquote class="say"><p>${esc(v.trim()).replace(/\n/g, "<br>")}</p></blockquote><div class="eacts"><button type="button" class="btn small erm">Remove</button></div></div>`,
+    )
+    .join("")}</details></section>`;
+}
 function leaveField(node) {
   try {
     node.blur();
@@ -6620,9 +7099,12 @@ function leaveField(node) {
 function enhance(sec, d, id, x, keep) {
   const ln = laneKey(sec, x);
   const hasPrep = sec === "jobs" && validPrep(PREPTXT[id]);
-  const active = sec === "jobs" ? ACTIVE_LANES.includes(ln) : sec === "hunters" && !laneOf("hunters", ln).done;
-  /* sheet: true (set by the assistant) opens a job in any other lane straight to its prep sheet, once prep.md exists */
-  const useSheet = active || callLive(x) || (sec === "jobs" && (sheetOverride[id] || (x.sheet === true && hasPrep)));
+  const done = !!laneOf(sec, ln).done;
+  const active = sec === "jobs" ? ACTIVE_LANES.includes(ln) : sec === "hunters" && !done;
+  /* sheet: true (set by the assistant) opens a job in any other lane straight to its prep sheet, once prep.md exists.
+     A booked call opens the sheet too, except on a closed card (Open prep sheet still does). */
+  const useSheet =
+    active || (callLive(x) && !done) || (sec === "jobs" && (sheetOverride[id] || (x.sheet === true && hasPrep)));
   if (!useSheet) {
     if (hasPrep) {
       const btn = el("button", {
@@ -6710,7 +7192,21 @@ function enhance(sec, d, id, x, keep) {
   bar.hidden = true;
   bar.innerHTML =
     '<span>This prep sheet changed on disk.</span> <button type="button" class="btn small primary">Reload it</button>';
-  let nav = [];
+  let nav = [],
+    sheetKeys = [];
+  /* redraw only the "Saved answers from earlier versions" section (after a removal, or answers read from the file) */
+  function refreshEarlier() {
+    if (!isJob) return;
+    const cur = $q("#p-earlier", left);
+    const wasOpen = !!(cur && $q("details.fold", cur) && $q("details.fold", cur).open);
+    const html = earlierHtml(id, sheetKeys);
+    if (cur) cur.remove();
+    if (!html) return;
+    left.insertAdjacentHTML("beforeend", html);
+    const sec = $q("#p-earlier", left);
+    if (wasOpen) $q("details.fold", sec).open = true;
+    wireCopy(left);
+  }
   function build() {
     const jd = isJob ? JOBDOCS[id] || {} : {};
     let lh = "";
@@ -6745,6 +7241,8 @@ function enhance(sec, d, id, x, keep) {
         lh += `<section class="hs" id="p-posting" data-title="Posting"><h3 class="hs-h"><span>The posting</span></h3><details class="fold"><summary>Open the saved posting</summary>${plain(jd.posting)}</details></section>`;
         nav.push(["p-posting", "Posting"]);
       }
+      sheetKeys = dd ? dd.keys : [];
+      if (dd) lh += earlierHtml(id, sheetKeys);
     } else {
       const hs = hunterSections(id, x);
       lh += hs.html;
@@ -6896,6 +7394,22 @@ function enhance(sec, d, id, x, keep) {
     }
   });
   left.addEventListener("click", (e) => {
+    /* Remove a saved answer from an earlier version of the sheet, after a confirm */
+    const row = e.target.closest(".hq.earlier");
+    if (row && e.target.closest(".eacts button")) {
+      const acts = $q(".eacts", row);
+      const b = e.target.closest(".eacts button");
+      if (b.classList.contains("erm")) {
+        acts.innerHTML =
+          '<span>Remove this answer from My_answers.md?</span> <button type="button" class="btn small erm-yes">Remove</button> <button type="button" class="btn small erm-no">Keep</button>';
+      } else if (b.classList.contains("erm-no")) {
+        acts.innerHTML = '<button type="button" class="btn small erm">Remove</button>';
+      } else if (b.classList.contains("erm-yes")) {
+        mySet(row.dataset.ek, "");
+        refreshEarlier();
+      }
+      return;
+    }
     const hh = e.target.closest(".hq h4");
     if (hh && cuesOnly && !e.target.closest(".hcopy") && !e.target.closest("a"))
       hh.parentElement.classList.toggle("open");
@@ -6961,6 +7475,12 @@ function enhance(sec, d, id, x, keep) {
     refreshDocs().then((ch) => {
       if (ch && d.isConnected) rebuild();
     });
+    /* answers read from My_answers.md after the sheet opened can belong in "Saved answers from earlier versions" */
+    const onAnswers = () => {
+      if (!d.isConnected) document.removeEventListener("jso-answers", onAnswers);
+      else refreshEarlier();
+    };
+    document.addEventListener("jso-answers", onAnswers);
     if (isJob) {
       bar.querySelector("button").onclick = () => {
         PREPTXT[id] = pendingText;
@@ -7169,7 +7689,8 @@ function openQuick() {
         laneId,
         done: !!ln.done,
         hay: [S.title(x), S.sub(x), x.company, x.firm, x.role, x.name].filter(Boolean).join(" ").toLowerCase(),
-        call: callLive(x) ? shortCall(x.callAt) : "",
+        /* a closed card's call is over as far as the board is concerned: no badge, no "booked call" ranking */
+        call: callLive(x) && !ln.done ? shortCall(x.callAt) : "",
       });
     }
   let LIBX = null;
@@ -7727,7 +8248,8 @@ if (!fileCopy && !localCopy && !FS_OK)
         (!fileCopy || collectionsOnly(store) !== collectionsOnly(fileCopy) || before !== collectionsOnly(store))
       )
         writeFile();
-      setTimeout(fileJobs, 300);
+      setTimeout(() => fileJobs(true), 300);
+      myResume();
     }
   }
   render();
@@ -7741,29 +8263,26 @@ const startTimer = setInterval(() => {
     setInterval(startup, 20 * 60 * 1000);
   }
 }, 2500);
-/* Pick up changes another tool (a script, an AI assistant) made while this page was open: new prep sheets, then the data file.
+/* Pick up changes another tool (a script, an AI assistant) made while this page was open: the data file first, then new
+   prep sheets (reading the data file first keeps the time in which an edit typed in the panel could race it short).
    With a panel or prep sheet open, the changes are merged in the background: the notes pad stays as it is, the panel's
    fields show the merged values (except one you are typing in, see refreshDrawer), and the board is redrawn and job
-   folders are filed when the panel closes. */
+   folders are filed when the panel closes. `focusRun` is the running pass (tests wait for it). */
 const panelOpen = () => $("#drawerRoot").childNodes.length > 0;
-window.addEventListener("focus", async () => {
+let focusRun = null;
+async function onFocus() {
   const ref = panelOpen() && openRef ? { ...openRef } : null;
-  const recBefore = ref ? JSON.stringify(get(ref.sec, ref.id) || null) : "";
-  const prepBefore = ref ? PREPTXT[ref.id] : undefined;
+  let recBefore = ref ? JSON.stringify(get(ref.sec, ref.id) || null) : "";
+  let prepBefore = ref ? PREPTXT[ref.id] : undefined;
   const syncPanel = () => {
     if (!ref || !openRef || openRef.sec !== ref.sec || openRef.id !== ref.id) return;
-    if (JSON.stringify(get(ref.sec, ref.id) || null) !== recBefore || PREPTXT[ref.id] !== prepBefore) refreshDrawer();
+    const rec = JSON.stringify(get(ref.sec, ref.id) || null);
+    if (rec !== recBefore || PREPTXT[ref.id] !== prepBefore) {
+      recBefore = rec;
+      prepBefore = PREPTXT[ref.id];
+      refreshDrawer();
+    }
   };
-  /* an open prep sheet checks its own prep.md; a plain panel does not, so its job is scanned like the rest */
-  if (FS.ok())
-    await scanPrep(
-      panelOpen()
-        ? {
-            quiet: true,
-            skip: openRef && openRef.sec === "jobs" && $("#drawerRoot .drawer.prep") ? openRef.id : null,
-          }
-        : undefined,
-    );
   if (dirHandle && canWrite && !writing) {
     const before = collectionsOnly(store);
     const r = await readFileInto();
@@ -7784,26 +8303,43 @@ window.addEventListener("focus", async () => {
         renderStatus();
       } else {
         render();
-        /* a card moved by another tool gets its job folder filed by stage right away */
-        setTimeout(fileJobs, 50);
+        /* a card moved by another tool gets its job folder filed by stage right away (every job is checked) */
+        setTimeout(() => fileJobs(true), 50);
       }
     } else renderStatus();
-    scanFolders(true);
-    /* The file is missing something this browser has (a tool wrote back an older or partial copy): write it back. */
+    /* The file is missing something this browser has (a tool wrote back an older or partial copy, or a record was merged
+       field by field): write it back. */
     if (r === "ok" && lastRaw && collectionsOnly(normalize(parseDataText(lastRaw))) !== collectionsOnly(store)) {
       gen++;
       dirty = true;
       clearTimeout(saveTimer);
       saveTimer = setTimeout(writeFile, 400);
     }
+    syncPanel();
+  }
+  /* an open prep sheet checks its own prep.md; a plain panel does not, so its job is scanned like the rest */
+  if (FS.ok()) {
+    await scanPrep(
+      panelOpen()
+        ? {
+            quiet: true,
+            skip: openRef && openRef.sec === "jobs" && $("#drawerRoot .drawer.prep") ? openRef.id : null,
+          }
+        : undefined,
+    );
+    scanFolders(true);
   }
   syncPanel();
+}
+window.addEventListener("focus", () => {
+  focusRun = onFocus();
 });
-/* Keep two open copies of the page in step. */
+/* Keep two open copies of the page in step. An open panel shows the other tab's change like a change from the folder. */
 window.addEventListener("storage", (e) => {
   if (e.key !== lsKey("board") || !e.newValue) return;
   try {
     const before = collectionsOnly(store);
+    const recBefore = openRef ? JSON.stringify(get(openRef.sec, openRef.id) || null) : "";
     store = merge(store, normalize(JSON.parse(e.newValue)));
     if (collectionsOnly(store) !== before) {
       if (canWrite) {
@@ -7812,7 +8348,8 @@ window.addEventListener("storage", (e) => {
         clearTimeout(saveTimer);
         saveTimer = setTimeout(writeFile, 400);
       }
-      if (!$("#drawerRoot").childNodes.length) render();
+      if (!panelOpen()) render();
+      else if (openRef && JSON.stringify(get(openRef.sec, openRef.id) || null) !== recBefore) refreshDrawer();
     }
   } catch (x) {}
 });
