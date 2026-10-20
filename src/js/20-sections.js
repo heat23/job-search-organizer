@@ -27,7 +27,6 @@ const SECTIONS = {
     facts: (j) => [
       ["Résumé sent", j.sentResume, true],
       ["Files", j.folder || null, true],
-      ["Frozen copy", j.frozen],
     ],
     extra: [{ key: "appliedAt", label: "Date applied", type: "dateIso" }],
     closedReasons: CONFIG.closedReasons,

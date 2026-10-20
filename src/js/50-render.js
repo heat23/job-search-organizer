@@ -664,8 +664,76 @@ function docsOf(x) {
     letter: x.noLetter ? null : base + encodeURIComponent(x.letterFile || CONFIG.files.coverLetter),
   };
 }
+/* With saving on, the page also checks that the PDFs are really in the folder. Each folder is listed once and cached,
+   and listed again when you come back to the window and after job folders are filed, so drawing the board never waits
+   for the disk. Without folder access the tag only reflects the fields, as before. */
+const folderFiles = new Map(); // folder path -> Set of file names, or null when the folder isn't there
+let folderScanT = null,
+  folderScanning = false,
+  folderScanAgain = false;
+async function scanFolders(fresh) {
+  if (!dirHandle || !canWrite || VIEW_ONLY) return;
+  if (folderScanning) {
+    folderScanAgain = true;
+    return;
+  }
+  folderScanning = true;
+  let changed = false;
+  try {
+    const want = new Set(
+      Object.values(live("jobs"))
+        .map((x) => x.folder)
+        .filter((f) => typeof f === "string" && f),
+    );
+    for (const f of want) {
+      if (!fresh && folderFiles.has(f)) continue;
+      let names = null;
+      try {
+        const d = await dirAt(f);
+        names = new Set();
+        for await (const [n, h] of d.entries()) if (h.kind === "file") names.add(n);
+      } catch (e) {
+        if (!e || e.name !== "NotFoundError") continue; // can't read it right now: keep what we knew
+      }
+      const old = folderFiles.get(f);
+      const same =
+        folderFiles.has(f) &&
+        (old === names || (old && names && old.size === names.size && [...names].every((n) => old.has(n))));
+      folderFiles.set(f, names);
+      if (!same) changed = true;
+    }
+  } finally {
+    folderScanning = false;
+  }
+  /* with a panel open the board is redrawn when it closes */
+  if (changed && !$("#drawerRoot").childNodes.length) render();
+  if (folderScanAgain) {
+    folderScanAgain = false;
+    scanFolders(true);
+  }
+}
+const fileChecks = () => !!(dirHandle && canWrite && !VIEW_ONLY);
 function docsTag(x, ln) {
   const d = docsOf(x);
+  if (fileChecks() && x.folder) {
+    if (!folderFiles.has(x.folder)) {
+      clearTimeout(folderScanT);
+      folderScanT = setTimeout(() => scanFolders(false), 0);
+    } else {
+      const have = folderFiles.get(x.folder);
+      const rMiss = !!d.resume && !(have && have.has(x.resumeFile || CONFIG.files.resume));
+      const lMiss = !!d.letter && !(have && have.has(x.letterFile || CONFIG.files.coverLetter));
+      if (rMiss || lMiss) {
+        if (laneOf("jobs", ln).done) return null;
+        const what = rMiss && lMiss ? "Résumé and cover letter files" : rMiss ? "Résumé file" : "Cover letter file";
+        return el("span", {
+          class: "tag docmiss",
+          title: `Not found in ${x.folder}`,
+          text: `✗ ${what} missing`,
+        });
+      }
+    }
+  }
   if (d.resume && d.letter)
     return el("span", {
       class: "tag docok",

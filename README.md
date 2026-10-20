@@ -84,7 +84,7 @@ Jamie Chen offered to refer me to Quillstone. Add Jamie to People and link them 
 
 It also:
 
-- Moves each job's résumé and cover-letter folder into a stage folder (`1 - To apply`, `2 - Applied`, `3 - Closed`) when the card changes lane.
+- Moves each job's résumé and cover-letter folder into a stage folder (`1 - To apply`, `2 - Applied`, `3 - Closed`) when the card changes lane, and flags a card whose résumé or cover letter PDF isn't in its folder.
 - Shows **Next up** each morning: follow-ups due, upcoming calls, starred jobs, top to-dos and your plan.
 - Warns you before you apply somewhere a headhunter has already submitted you.
 - Backs up your data and notes every day, with an optional second copy on another drive.
@@ -99,9 +99,26 @@ It also:
 1. Copy the **`boards/empty`** folder somewhere private, for example `Documents/Job Search`.
 2. Open `organizer.html` from that folder, click **Turn on saving** and pick the same folder.
 3. Point your AI assistant at the folder (see above). `AGENTS.md` is already there.
-4. Optional: open `organizer.config.js` in a text editor to set your name, file names, lane names or stage folders.
+4. Optional: open `organizer.config.js` in a text editor to set your name, file names, lane names, call types or stage folders (see [Settings](#settings)).
 
 To start from the sample guides, copy the `.md` files under `boards/sample/Library` into your own `Library` folder.
+
+### Settings
+
+`organizer.config.js` holds your settings. Anything you leave out keeps its default; the full list is in [`src/js/00-config.js`](src/js/00-config.js). Reload the page after a change.
+
+- **Lanes.** Lane ids (`todo`, `applied`, `screen`, `interview`, `offer`, `closed`, and the ones under `hunters` and `people`) are fixed: the data file, `AGENTS.md` and the page rely on them. A lane's `name`, `color` and `follow` (follow-up days) are yours to change. Your list replaces the default one, so list every lane by its id; a lane keeps the default settings you leave out. If a lane is missing, the page adds the default one back and logs a warning in the browser console.
+- **Call types.** Each one is `{ label, moves }`. `label` is what the booking box shows and what's stored on the card. `moves` sets where booking that call moves a job: `"screen"` (Applied → Recruiter screen), `"interview"` (Applied or Recruiter screen → Interviewing) or `"none"`. Because the move comes from `moves`, you can rename the labels:
+
+  ```js
+  callTypes: [
+    { label: "Intro call", moves: "screen" },
+    { label: "Team interview", moves: "interview" },
+    { label: "Coffee chat", moves: "none" },
+  ],
+  ```
+
+  Plain strings from older settings still work, and so do cards booked under a label you later renamed.
 
 The four-week plan on the Headhunters tab is a sample you can edit or empty (the empty board starts without one): its steps are the `plan` records in `board_data.js`, which your assistant can rewrite, and `plan.*` in the config renames it. The Headhunters tab works for any agency or in-house recruiter, and `sections.*` in the config renames it and the People tab.
 
@@ -144,7 +161,7 @@ A job gets a prep sheet as soon as `Job notes/<job id>/prep.md` exists. It opens
 
 - **No framework, no runtime dependencies.** 18 small plain-JavaScript files under `src/`, joined by an 80-line build script into one HTML file that runs from `file://`.
 - **Safe with other writers.** Records merge by `updatedAt`, nothing is hard-deleted, and a notes file that changed on disk is never overwritten, so you, the page and your AI assistant can all edit the same folder. Tests cover an assistant editing files while the page is open.
-- **Tested in a real browser.** 226 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
+- **Tested in a real browser.** 300 Playwright checks run in CI against an in-memory folder that implements the File System Access API. The same in-memory folder powers the live demo.
 - **Private.** Guides are escaped before rendering, and a test fails if the page makes any network request.
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -155,7 +172,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 npm install
 npx playwright install chromium   # once, for the tests
 npm run build                     # src/ -> boards/*/organizer.html
-npm test                          # 226 browser checks
+npm test                          # 300 browser checks
 npm run demo                      # the live demo page -> _site/index.html
 ```
 

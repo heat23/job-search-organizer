@@ -2142,7 +2142,7 @@ a.hit span {
 /* Settings. Everything personal lives here, so the rest of the code stays generic.
    To change a setting without rebuilding, put an `organizer.config.js` file next to the HTML page:
      window.ORGANIZER_CONFIG = { ownerName: "Alex", files: { resume: "Alex_Resume.pdf" } };
-   It is merged over these defaults. Lane ids (todo, applied, screen…) are fixed; their names and timings are not. */
+   It is merged over these defaults. Lane ids (todo, applied, screen…) are fixed; their names, colors and timings are not. */
 const DEFAULT_CONFIG = {
   appTitle: "Job Search Organizer",
   /* Optional. Shown in the page title as "<name>'s job search". */
@@ -2206,7 +2206,18 @@ const DEFAULT_CONFIG = {
     people: { label: "People", short: "People", noun: "person" },
   },
   closedReasons: ["Rejected", "Withdrew", "Posting closed", "No reply", "Took another offer"],
-  callTypes: ["Recruiter screen", "Hiring manager", "Panel", "Onsite", "Headhunter call", "Other"],
+  /* Call types in the booking box. `label` is what you see and what is stored on the card (callType); `moves` says where
+     booking one moves a job: "screen" (from Applied to Recruiter screen), "interview" (from Applied or Recruiter screen
+     to Interviewing) or "none". Rename the labels freely. A plain string still works: it moves like the old rule
+     (a label with Hiring, Panel or Onsite in it counts as an interview, anything else as a screen). */
+  callTypes: [
+    { label: "Recruiter screen", moves: "screen" },
+    { label: "Hiring manager", moves: "interview" },
+    { label: "Panel", moves: "interview" },
+    { label: "Onsite", moves: "interview" },
+    { label: "Headhunter call", moves: "screen" },
+    { label: "Other", moves: "screen" },
+  ],
   /* The checklist shown on the Headhunters tab (records live in the `plan` collection). */
   plan: {
     title: "Four-week plan",
@@ -2270,7 +2281,81 @@ function mergeConfig(base, over) {
   }
   return out;
 }
-const CONFIG = mergeConfig(DEFAULT_CONFIG, window.ORGANIZER_CONFIG);
+const CONFIG = mergeConfig(JSON.parse(JSON.stringify(DEFAULT_CONFIG)), window.ORGANIZER_CONFIG);
+/* Lane ids are the fixed contract the code and the data file rely on; a lane's name, color and follow-up days are
+   settings. Arrays in the settings replace the defaults, so a lane list that leaves out a lane (or a call type list
+   in an odd shape) is repaired here with the defaults and a console warning, rather than breaking the page. */
+const CONFIG_WARNINGS = [];
+function checkConfig(cfg) {
+  const warn = (m) => {
+    CONFIG_WARNINGS.push(m);
+    try {
+      console.warn("organizer.config.js: " + m);
+    } catch (e) {}
+  };
+  const lanes = cfg.lanes && typeof cfg.lanes === "object" ? cfg.lanes : {};
+  cfg.lanes = { ...lanes };
+  for (const sec of Object.keys(DEFAULT_CONFIG.lanes)) {
+    const dflt = DEFAULT_CONFIG.lanes[sec];
+    const given = Array.isArray(lanes[sec]) ? lanes[sec] : null;
+    if (lanes[sec] != null && !given) warn(`lanes.${sec} should be a list; using the default lanes.`);
+    const out = [];
+    for (const l of given || dflt) {
+      if (!l || typeof l !== "object" || typeof l.id !== "string" || !l.id) {
+        warn(`lanes.${sec} has an entry without an id; it was skipped.`);
+        continue;
+      }
+      if (out.some((o) => o.id === l.id)) continue;
+      /* a lane you list keeps the default's other settings (color, follow-up days, done) unless you set them */
+      const base = dflt.find((d) => d.id === l.id);
+      out.push(base ? { ...base, ...l } : { ...l });
+    }
+    /* every default lane id is required: put a missing one back next to its neighbor */
+    dflt.forEach((d, i) => {
+      if (out.some((o) => o.id === d.id)) return;
+      warn(`lanes.${sec} is missing the "${d.id}" lane; the default "${d.name}" lane was added back.`);
+      let at = 0;
+      for (let k = i - 1; k >= 0; k--) {
+        const j = out.findIndex((o) => o.id === dflt[k].id);
+        if (j >= 0) {
+          at = j + 1;
+          break;
+        }
+      }
+      out.splice(at, 0, { ...d });
+    });
+    cfg.lanes[sec] = out;
+  }
+  for (const sec of Object.keys(cfg.stale || {})) {
+    const r = cfg.stale[sec];
+    if (!r) continue;
+    const ids = (cfg.lanes[sec] || []).map((l) => l.id);
+    if (!Array.isArray(r.lanes) || (r.close && !ids.includes(r.close))) {
+      warn(`stale.${sec} names a lane that doesn't exist; using the default rule.`);
+      cfg.stale[sec] = DEFAULT_CONFIG.stale[sec] || null;
+    }
+  }
+  /* call types: strings (older settings) or { label, moves } */
+  const MOVES = ["screen", "interview", "none"];
+  const legacy = (label) => (/Hiring|Panel|Onsite/.test(label) ? "interview" : "screen");
+  const types = Array.isArray(cfg.callTypes) ? cfg.callTypes : DEFAULT_CONFIG.callTypes;
+  if (!Array.isArray(cfg.callTypes)) warn("callTypes should be a list; using the default call types.");
+  cfg.callTypes = types
+    .map((t) => {
+      if (typeof t === "string" && t.trim()) return { label: t.trim(), moves: legacy(t) };
+      if (t && typeof t === "object" && typeof t.label === "string" && t.label.trim()) {
+        if (t.moves != null && !MOVES.includes(t.moves))
+          warn(`callTypes "${t.label}" has moves: "${t.moves}"; use screen, interview or none.`);
+        return { ...t, label: t.label.trim(), moves: MOVES.includes(t.moves) ? t.moves : legacy(t.label) };
+      }
+      warn("callTypes has an entry without a label; it was skipped.");
+      return null;
+    })
+    .filter(Boolean);
+  if (!cfg.callTypes.length) cfg.callTypes = DEFAULT_CONFIG.callTypes.map((t) => ({ ...t }));
+  return cfg;
+}
+checkConfig(CONFIG);
 /* The data file next to the page (index.html loads it by this name). */
 const DATA_FILE = "board_data.js";
 
@@ -2310,6 +2395,15 @@ function safeUrl(u) {
     return null;
   }
 }
+/* Company and contact names compared loosely: case, spacing and punctuation are ignored and "&" equals "and"
+   ("Summit & Vale Partners" = "summit and vale partners."). Nothing else is dropped, so different names stay different. */
+const normName = (s) =>
+  String(s || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const $ = (s, r = document) => r.querySelector(s);
 /* el("div",{class:"x",onclick:fn,text:"hi"},child1,child2): text is always set as text, never as HTML. */
@@ -2375,7 +2469,6 @@ const SECTIONS = {
     facts: (j) => [
       ["Résumé sent", j.sentResume, true],
       ["Files", j.folder || null, true],
-      ["Frozen copy", j.frozen],
     ],
     extra: [{ key: "appliedAt", label: "Date applied", type: "dateIso" }],
     closedReasons: CONFIG.closedReasons,
@@ -2484,7 +2577,6 @@ const STR = [
   "resume",
   "sentResume",
   "folder",
-  "frozen",
   "changedBy",
 ];
 function clean(r) {
@@ -2726,8 +2818,8 @@ function moveCard(sec, id, lane) {
 /* ---- 40-storage.js ---- */
 /* ================= saving to your folder (File System Access API: Chrome and Edge) =================
    You pick the folder this page lives in once; Chrome remembers the permission. Every change is kept in this
-   browser at once and written to the data file 400 ms later. Before the first write of each day, the file
-   as it was goes to backups/. */
+   browser at once and written to the data file 400 ms later. Each day the file as it was goes to backups/: before the
+   first write of the day, or at start-up, on a new day and every 20 minutes when nothing was written yet. */
 const FS_OK = typeof window.showDirectoryPicker === "function";
 const VIEW_ONLY = !FS_OK;
 if (VIEW_ONLY) document.documentElement.classList.add("viewonly");
@@ -2862,10 +2954,24 @@ async function dailyBackup(rawBefore) {
   } catch (e) {}
 }
 
+/* A day with no edits still gets its backup (called at start-up, when the date changes and every 20 minutes). */
+async function backupToday() {
+  if (!dirHandle || !canWrite || writing || backedUpDay === TODAY()) return;
+  let t = "";
+  try {
+    t = await (await (await dirHandle.getFileHandle(DATA_FILE)).getFile()).text();
+    parseDataText(t);
+  } catch (e) {
+    return; // no file yet, or a broken one: the next good save takes the backup
+  }
+  await dailyBackup(t);
+}
+
 /* ================= filing each job's documents folder by stage =================
    A job's folder lives in <board folder>/<stage folder>/<job folder>. When a card changes lane the page moves the folder
    (copy every file, check sizes, then remove the old copy) and updates "folder", so the Résumé and Cover letter buttons keep working.
-   A folder found anywhere else in the board folder (for example at the top level, where a new package lands) is filed the same way. */
+   The folder is looked for at its "folder" path and under each stage folder by its name (where a tool or a person may
+   have moved it); a folder anywhere else is not searched for. */
 const STAGE_DIR = CONFIG.stageFolders;
 const REMOVED_DIR = CONFIG.stageFolders.removed,
   PURGE_DAYS = CONFIG.removedPurgeDays;
@@ -2984,6 +3090,7 @@ async function fileJobs() {
     filing = false;
   }
   if (moved.length || failed.length) render();
+  scanFolders(true);
   if (failed.length && !lastUndo)
     showToast(`Couldn't file the folder for ${failed.join(", ")}. Nothing was lost; check the stage folders.`);
   else if (moved.length > 1 && !lastUndo) showToast(`Filed ${moved.length} job folders by stage.`);
@@ -3957,8 +4064,76 @@ function docsOf(x) {
     letter: x.noLetter ? null : base + encodeURIComponent(x.letterFile || CONFIG.files.coverLetter),
   };
 }
+/* With saving on, the page also checks that the PDFs are really in the folder. Each folder is listed once and cached,
+   and listed again when you come back to the window and after job folders are filed, so drawing the board never waits
+   for the disk. Without folder access the tag only reflects the fields, as before. */
+const folderFiles = new Map(); // folder path -> Set of file names, or null when the folder isn't there
+let folderScanT = null,
+  folderScanning = false,
+  folderScanAgain = false;
+async function scanFolders(fresh) {
+  if (!dirHandle || !canWrite || VIEW_ONLY) return;
+  if (folderScanning) {
+    folderScanAgain = true;
+    return;
+  }
+  folderScanning = true;
+  let changed = false;
+  try {
+    const want = new Set(
+      Object.values(live("jobs"))
+        .map((x) => x.folder)
+        .filter((f) => typeof f === "string" && f),
+    );
+    for (const f of want) {
+      if (!fresh && folderFiles.has(f)) continue;
+      let names = null;
+      try {
+        const d = await dirAt(f);
+        names = new Set();
+        for await (const [n, h] of d.entries()) if (h.kind === "file") names.add(n);
+      } catch (e) {
+        if (!e || e.name !== "NotFoundError") continue; // can't read it right now: keep what we knew
+      }
+      const old = folderFiles.get(f);
+      const same =
+        folderFiles.has(f) &&
+        (old === names || (old && names && old.size === names.size && [...names].every((n) => old.has(n))));
+      folderFiles.set(f, names);
+      if (!same) changed = true;
+    }
+  } finally {
+    folderScanning = false;
+  }
+  /* with a panel open the board is redrawn when it closes */
+  if (changed && !$("#drawerRoot").childNodes.length) render();
+  if (folderScanAgain) {
+    folderScanAgain = false;
+    scanFolders(true);
+  }
+}
+const fileChecks = () => !!(dirHandle && canWrite && !VIEW_ONLY);
 function docsTag(x, ln) {
   const d = docsOf(x);
+  if (fileChecks() && x.folder) {
+    if (!folderFiles.has(x.folder)) {
+      clearTimeout(folderScanT);
+      folderScanT = setTimeout(() => scanFolders(false), 0);
+    } else {
+      const have = folderFiles.get(x.folder);
+      const rMiss = !!d.resume && !(have && have.has(x.resumeFile || CONFIG.files.resume));
+      const lMiss = !!d.letter && !(have && have.has(x.letterFile || CONFIG.files.coverLetter));
+      if (rMiss || lMiss) {
+        if (laneOf("jobs", ln).done) return null;
+        const what = rMiss && lMiss ? "Résumé and cover letter files" : rMiss ? "Résumé file" : "Cover letter file";
+        return el("span", {
+          class: "tag docmiss",
+          title: `Not found in ${x.folder}`,
+          text: `✗ ${what} missing`,
+        });
+      }
+    }
+  }
   if (d.resume && d.letter)
     return el("span", {
       class: "tag docok",
@@ -4444,10 +4619,17 @@ function refreshDrawerHead() {
   }
 }
 /* Another tool (an AI assistant) changed the open record and the change was merged in the background: bring the panel's
-   fields up to date, so a later edit can't write the old text back over the newer value. A field you are typing in, or
-   one with an unsaved edit, is left as it is: your typing wins there. The notes pad and the answer boxes keep their
-   own files and are not touched. A plain panel whose stage changed (or whose prep sheet just appeared) is rebuilt
-   when nothing in it is being edited. */
+   fields up to date, so a later edit can't write the old text back over the newer value. A field with an unsaved edit,
+   or one you have typed in since you focused it, is left as it is: your typing wins there. A focused field you haven't
+   changed takes the new value (caret at the end). The notes pad and the answer boxes keep their own files and are not
+   touched. A plain panel whose stage changed (or whose prep sheet just appeared) is rebuilt when nothing in it is
+   being edited. */
+const focusVal = new WeakMap();
+document.addEventListener("focusin", (e) => {
+  const n = e.target;
+  if (n && n.dataset && n.dataset.fkey) focusVal.set(n, n.value);
+});
+const untouched = (n) => !pending[n.dataset.fkey] && focusVal.has(n) && focusVal.get(n) === n.value;
 function fieldValue(n, x) {
   const k = n.dataset.fkey,
     kind = n.dataset.fkind;
@@ -4472,7 +4654,7 @@ function refreshDrawer() {
     return;
   }
   d.querySelectorAll("[data-fkey]").forEach((n) => {
-    if (n === a || pending[n.dataset.fkey]) return;
+    if (pending[n.dataset.fkey] || (n === a && !untouched(n))) return;
     const v = fieldValue(n, x);
     if (n.dataset.fkind === "ref" && v && ![...n.options].some((o) => o.value === v)) {
       const p = get("people", v);
@@ -4480,7 +4662,14 @@ function refreshDrawer() {
         el("option", { value: v, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
       );
     }
-    if (n.value !== v) n.value = v;
+    if (n.value === v) return;
+    n.value = v;
+    if (n === a) {
+      focusVal.set(n, n.value);
+      try {
+        n.setSelectionRange(n.value.length, n.value.length);
+      } catch (e) {}
+    }
   });
   d.querySelectorAll("#lanepick button").forEach((b) => b.setAttribute("aria-pressed", String(b.id === "lp-" + ln)));
   d.querySelectorAll("[data-reason]").forEach((c) =>
@@ -6110,8 +6299,17 @@ window.addEventListener("beforeunload", (e) => {
 /* ================= calls: book them on a card, see them on Next up =================
    Fields on a job or headhunter: callAt (local time, "YYYY-MM-DDTHH:MM"), callType, callWith, callLink.
    Booking moves the card forward (a recruiter call to Recruiter screen, a later round to Interviewing)
-   and sets the follow-up to the day after the call. */
+   and sets the follow-up to the day after the call. callType stores the label; where it moves a job comes from the
+   type's `moves` setting, never from the wording, so the labels can be renamed. */
 const CALLTYPES = CONFIG.callTypes;
+/* Where booking a call of this type moves a job. A label that is no longer in the settings (an older card) falls back
+   to the default list, then to the old wording rule. */
+function callMoves(label) {
+  const l = String(label || "").trim();
+  const t = CALLTYPES.find((c) => c.label === l) || DEFAULT_CONFIG.callTypes.find((c) => c.label === l);
+  if (t) return t.moves;
+  return /Hiring|Panel|Onsite/.test(l) ? "interview" : "screen";
+}
 const parseCall = (v) => {
   if (typeof v !== "string" || !v) return NaN;
   return Date.parse(/^\d{4}-\d\d-\d\d$/.test(v) ? v + "T09:00" : v);
@@ -6170,7 +6368,11 @@ function callRow(sec, id, x, strip, summary) {
   type.setAttribute("aria-label", "Call type");
   type.innerHTML =
     '<option value="">Call type…</option>' +
-    CALLTYPES.map((t) => `<option${x.callType === t ? " selected" : ""}>${esc(t)}</option>`).join("");
+    CALLTYPES.map((t) => t.label)
+      /* a type that was renamed in the settings since this call was booked stays selectable, so it isn't cleared */
+      .concat(x.callType && !CALLTYPES.some((t) => t.label === x.callType) ? [x.callType] : [])
+      .map((t) => `<option${x.callType === t ? " selected" : ""}>${esc(t)}</option>`)
+      .join("");
   const when = mk("input");
   when.type = "datetime-local";
   when.value = toLocalInput(x.callAt);
@@ -6268,9 +6470,9 @@ function autoMove(sec, id, type) {
   if (!x) return;
   const ln = laneKey(sec, x);
   if (sec === "jobs") {
-    const later = /Hiring|Panel|Onsite/.test(type || "");
-    if (later && (ln === "applied" || ln === "screen")) moveCard(sec, id, "interview");
-    else if (!later && ln === "applied") moveCard(sec, id, "screen");
+    const to = callMoves(type);
+    if (to === "interview" && (ln === "applied" || ln === "screen")) moveCard(sec, id, "interview");
+    else if (to === "screen" && ln === "applied") moveCard(sec, id, "screen");
   } else if (sec === "hunters" && ["todo", "registered", "contacted"].includes(ln)) moveCard(sec, id, "talking");
 }
 /* Next up: the list of booked calls */
@@ -6345,14 +6547,15 @@ const SHORT = (t) => {
   for (const [re, to] of PILL_LABELS) if (re.test(t)) return t.replace(re, to);
   return t;
 };
-/* The outreach guide: one "## Name, Firm" block per contact with **Connection request** and **Follow-up message** quotes. */
+/* The outreach guide: one "## Name, Firm" block per contact with **Connection request** and **Follow-up message** quotes.
+   Keyed by the loosely compared name (normName), so "## jonah  whitfield, …" still finds Jonah Whitfield. */
 function parseOutreach(md) {
   const out = {};
   for (const blk of String(md).split(/^## /m).slice(1)) {
     const name = blk.split("\n")[0].split(",")[0].trim();
     const req = (blk.match(/\*\*Connection request\*\*[^\n]*\n\n((?:>.*\n?)+)/) || [])[1];
     const msg = (blk.match(/\*\*Follow-up message\*\*[^\n]*\n\n((?:>.*\n?)+)/) || [])[1];
-    out[name] = {
+    out[normName(name)] = {
       req: req ? req.replace(/^>\s?/gm, "").trim() : "",
       msg: msg ? msg.replace(/^>\s?/gm, "").trim() : "",
     };
@@ -6363,8 +6566,10 @@ function hunterSections(id, x) {
   const L = CONFIG.library;
   const nav = [];
   let h = "";
+  /* people whose company is this headhunter's name or firm, compared loosely (see normName) */
+  const names = [x.name, x.firm].map(normName).filter(Boolean);
   const ppl = Object.entries(live("people")).filter(
-    ([, p]) => p.company === x.name || (x.firm && p.company === x.firm),
+    ([, p]) => normName(p.company) && names.includes(normName(p.company)),
   );
   const OD = DOCS[L.outreachDoc] && DOCS[L.outreachDoc].md ? parseOutreach(DOCS[L.outreachDoc].md) : {};
   const script = L.hunterScript
@@ -6378,7 +6583,7 @@ function hunterSections(id, x) {
   if (!ppl.length)
     h += `<p class="muted">No people on the board for this firm yet. Add them on the People tab with this firm as their company.</p>`;
   for (const [, p] of ppl) {
-    const m = OD[p.name] || {};
+    const m = OD[normName(p.name)] || {};
     const ln = laneOf("people", laneKey("people", p)).name;
     h += `<div class="hq"><h4><span>${p.url && /^https?:/.test(p.url) ? `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.name)} ↗</a>` : esc(p.name)}</span><span class="muted" style="font-weight:400;font-size:13px">${esc(ln)}${p.followUp ? " · follow up " + esc(fmtDate(p.followUp)) : ""}</span></h4>`;
     if (m.req)
@@ -7159,20 +7364,23 @@ function renderLibrary(v) {
             .replace(/\*\*|\*|(^|\s)>\s?|:::\s*fold|\{\.pay\}|\|/g, " ")
             .replace(/\s+/g, " ");
           const k = plainT.toLowerCase().indexOf(t);
-          if (k >= 0 && u.body.length > 60)
+          if (k >= 0)
             hits.push({
               id,
               sec: s.title,
               t: u.t,
               len: u.body.length,
+              real: u.body.length > 60,
+              inTitle: String(u.t).toLowerCase().includes(t),
               pay: !!u.pay,
               snip: plainT.slice(Math.max(0, k - 40), k + 100),
             });
         }
       }
     }
-    /* the longest answers first: a real answer beats a one-line mention */
-    hits.sort((a, b) => b.len - a.len);
+    /* real answers first (a one-line mention or a short answer comes after), then a hit in the question itself,
+       then the longer answer */
+    hits.sort((a, b) => b.real - a.real || b.inTitle - a.inTitle || b.len - a.len);
     $qa("a[data-doc]", nav).forEach((a) => a.classList.remove("on"));
     const snip = (h) =>
       h.pay && CONFIG.blurPay ? `<span class="paynote-s">Pay: open it to see</span>` : `<span>…${esc(h.snip)}…</span>`;
@@ -7228,7 +7436,7 @@ window.addEventListener("focus", async () => {
 
 /* ---- 88-backups.js ---- */
 /* ================= backups =================
-   1. Every day, the first save copies the data file into backups/ (see storage.js).
+   1. Every day, the first save (or start-up, on a day without edits) copies the data file into backups/ (see storage.js).
    2. Every day, your notes (every my_notes.md under Job notes, and Library/My_answers.md) are copied into backups/notes_<date>/.
    3. Optional: a second folder somewhere else (an external drive, a synced folder) gets a full copy of the board folder
       once a day. It can't be inside the board folder itself. */
@@ -7417,6 +7625,7 @@ let startedUp = false;
 async function startup() {
   if (!FS.ok()) return;
   await scanPrep();
+  await backupToday();
   const day = TODAY();
   const last = lsGet(BK_DAY, "");
   let msg = "";
@@ -7511,6 +7720,8 @@ if (!fileCopy && !localCopy && !FS_OK)
       if (r === "bad") {
         saveErr = "bad";
       }
+      /* today's copy of the data file, even if nothing gets saved today */
+      if (r === "ok") await dailyBackup(lastRaw);
       if (
         r !== "bad" &&
         (!fileCopy || collectionsOnly(store) !== collectionsOnly(fileCopy) || before !== collectionsOnly(store))
@@ -7577,6 +7788,7 @@ window.addEventListener("focus", async () => {
         setTimeout(fileJobs, 50);
       }
     } else renderStatus();
+    scanFolders(true);
     /* The file is missing something this browser has (a tool wrote back an older or partial copy): write it back. */
     if (r === "ok" && lastRaw && collectionsOnly(normalize(parseDataText(lastRaw))) !== collectionsOnly(store)) {
       gen++;
@@ -7604,13 +7816,14 @@ window.addEventListener("storage", (e) => {
     }
   } catch (x) {}
 });
-/* Refresh "due today" when the date changes while the page is open. */
+/* Refresh "due today" when the date changes while the page is open, and take the new day's data backup. */
 let shownDay = TODAY();
 setInterval(
   () => {
     if (TODAY() !== shownDay) {
       shownDay = TODAY();
       if (!$("#drawerRoot").childNodes.length) render();
+      backupToday();
     }
   },
   5 * 60 * 1000,

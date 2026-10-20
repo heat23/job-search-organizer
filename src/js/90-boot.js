@@ -73,6 +73,8 @@ if (!fileCopy && !localCopy && !FS_OK)
       if (r === "bad") {
         saveErr = "bad";
       }
+      /* today's copy of the data file, even if nothing gets saved today */
+      if (r === "ok") await dailyBackup(lastRaw);
       if (
         r !== "bad" &&
         (!fileCopy || collectionsOnly(store) !== collectionsOnly(fileCopy) || before !== collectionsOnly(store))
@@ -139,6 +141,7 @@ window.addEventListener("focus", async () => {
         setTimeout(fileJobs, 50);
       }
     } else renderStatus();
+    scanFolders(true);
     /* The file is missing something this browser has (a tool wrote back an older or partial copy): write it back. */
     if (r === "ok" && lastRaw && collectionsOnly(normalize(parseDataText(lastRaw))) !== collectionsOnly(store)) {
       gen++;
@@ -166,13 +169,14 @@ window.addEventListener("storage", (e) => {
     }
   } catch (x) {}
 });
-/* Refresh "due today" when the date changes while the page is open. */
+/* Refresh "due today" when the date changes while the page is open, and take the new day's data backup. */
 let shownDay = TODAY();
 setInterval(
   () => {
     if (TODAY() !== shownDay) {
       shownDay = TODAY();
       if (!$("#drawerRoot").childNodes.length) render();
+      backupToday();
     }
   },
   5 * 60 * 1000,

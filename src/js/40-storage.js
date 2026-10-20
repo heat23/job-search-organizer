@@ -1,7 +1,7 @@
 /* ================= saving to your folder (File System Access API: Chrome and Edge) =================
    You pick the folder this page lives in once; Chrome remembers the permission. Every change is kept in this
-   browser at once and written to the data file 400 ms later. Before the first write of each day, the file
-   as it was goes to backups/. */
+   browser at once and written to the data file 400 ms later. Each day the file as it was goes to backups/: before the
+   first write of the day, or at start-up, on a new day and every 20 minutes when nothing was written yet. */
 const FS_OK = typeof window.showDirectoryPicker === "function";
 const VIEW_ONLY = !FS_OK;
 if (VIEW_ONLY) document.documentElement.classList.add("viewonly");
@@ -136,10 +136,24 @@ async function dailyBackup(rawBefore) {
   } catch (e) {}
 }
 
+/* A day with no edits still gets its backup (called at start-up, when the date changes and every 20 minutes). */
+async function backupToday() {
+  if (!dirHandle || !canWrite || writing || backedUpDay === TODAY()) return;
+  let t = "";
+  try {
+    t = await (await (await dirHandle.getFileHandle(DATA_FILE)).getFile()).text();
+    parseDataText(t);
+  } catch (e) {
+    return; // no file yet, or a broken one: the next good save takes the backup
+  }
+  await dailyBackup(t);
+}
+
 /* ================= filing each job's documents folder by stage =================
    A job's folder lives in <board folder>/<stage folder>/<job folder>. When a card changes lane the page moves the folder
    (copy every file, check sizes, then remove the old copy) and updates "folder", so the Résumé and Cover letter buttons keep working.
-   A folder found anywhere else in the board folder (for example at the top level, where a new package lands) is filed the same way. */
+   The folder is looked for at its "folder" path and under each stage folder by its name (where a tool or a person may
+   have moved it); a folder anywhere else is not searched for. */
 const STAGE_DIR = CONFIG.stageFolders;
 const REMOVED_DIR = CONFIG.stageFolders.removed,
   PURGE_DAYS = CONFIG.removedPurgeDays;
@@ -258,6 +272,7 @@ async function fileJobs() {
     filing = false;
   }
   if (moved.length || failed.length) render();
+  scanFolders(true);
   if (failed.length && !lastUndo)
     showToast(`Couldn't file the folder for ${failed.join(", ")}. Nothing was lost; check the stage folders.`);
   else if (moved.length > 1 && !lastUndo) showToast(`Filed ${moved.length} job folders by stage.`);

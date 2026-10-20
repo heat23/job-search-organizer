@@ -36,7 +36,7 @@ Dates: `followUp` and `keepUntil` are local dates `YYYY-MM-DD`. `callAt` is a lo
 | `keepUntil` | No "no change in N days" nudge before this date. The page sets it when the person logs a follow-up or chooses Keep waiting. |
 | `referralId` | Id of the person in `people` who referred you. |
 | `closedReason` | Why it closed: `Rejected`, `Withdrew`, `Posting closed`, `No reply` or `Took another offer`. |
-| `callAt`, `callType`, `callWith`, `callLink` | The next booked call. `callType` is `Recruiter screen`, `Hiring manager`, `Panel`, `Onsite`, `Headhunter call` or `Other`. |
+| `callAt`, `callType`, `callWith`, `callLink` | The next booked call. `callType` is one of the call type labels in the settings; by default `Recruiter screen`, `Hiring manager`, `Panel`, `Onsite`, `Headhunter call` or `Other`. |
 | `notes` | Short free text shown on the card. |
 
 Job stages (`lane`), with the default follow-up in days: `todo` (To apply), `applied` (7), `screen` (Recruiter screen, 5), `interview` (Interviewing, 5), `offer` (3), `closed`.
@@ -59,14 +59,14 @@ Stages: `todo` (To ask), `asked` (7), `talking` (14), `helped`, `noreply`.
 
 The checklist on the Headhunters tab: `week` (1 to 4), `order`, `text`, `done`, `doneAt`. A step with `auto` ticks itself: `"hunters_registered"` (every headhunter with a `tier` is past To register) or `"people10"` (ten people on the board).
 
-The page's settings file, `organizer.config.js`, can rename the stages and change the follow-up days. The ids above never change.
+The page's settings file, `organizer.config.js`, can rename the stages, change their follow-up days and rename the call types. The stage ids above never change, so always write the ids, never the names. Each call type in `callTypes` has a `label` (the text you store in `callType`) and `moves`: `"screen"`, `"interview"` or `"none"` (an older settings file may list plain strings instead).
 
 ## Moving a card
 
 Set `lane` and `movedAt`, and a new `followUp` (today plus the stage's days) unless the person gave a date.
 
 - **Applied:** also set `appliedAt`, and `sentResume` if you know which version was sent.
-- **Call booked:** set `callAt`, `callType`, `callWith`, `callLink`, move a recruiter call to `screen` and later rounds to `interview`, and set `followUp` to the day after the call.
+- **Call booked:** set `callAt`, `callType`, `callWith`, `callLink`, and set `followUp` to the day after the call. Move the job the way its call type's `moves` says: `screen` moves it from `applied` to `screen`, `interview` moves it from `applied` or `screen` to `interview`, `none` leaves it. With the default types, a recruiter call goes to `screen` and later rounds to `interview`.
 - **Closed:** set `closedReason` and clear `followUp` (`null`). A closed card never shows its call, so clearing the call fields is optional.
 - **Offer:** `lane: "offer"`, with a short summary in `notes`.
 
@@ -76,7 +76,7 @@ When the person asks you to set up the documents for a job (for example a tailor
 
 1. Create `1 - To apply/<Company> - <Role>/` (no `/` in the name; use the `stageFolders.todo` name if `organizer.config.js` changes it), even if the job is already further along.
 2. Save the files there under the names in `organizer.config.js` (`files.resume` and `files.coverLetter`, default `Resume.pdf` and `Cover_Letter.pdf`), or set `resumeFile` / `letterFile` on the job. Set `noLetter: true` if there is no cover letter.
-3. Set the job's `folder` to that path, with a new `updatedAt`. The page moves the folder to the job's stage folder on its own.
+3. Set the job's `folder` to that path, with a new `updatedAt`. The page moves the folder to the job's stage folder on its own, and its card says when a file it expects isn't in the folder.
 
 ## Prep sheets and notes
 

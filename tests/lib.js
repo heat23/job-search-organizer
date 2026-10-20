@@ -24,11 +24,15 @@ const boardText = fs.readFileSync(path.join(TREE, "board_data.js"), "utf8");
 const parseBoard = (t) => JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
 const data = parseBoard(boardText);
 
-/* The files the fake folder starts with: the tree, plus a placeholder résumé in each job's folder */
+/* The files the fake folder starts with: the tree, plus a placeholder résumé and cover letter in each job's folder */
 function files(extra, text) {
   const f = readTree(TREE);
   f["board_data.js"] = text || boardText;
-  for (const v of Object.values(data.jobs)) if (v.folder && !v.deleted) f[v.folder + "/Resume.pdf"] = "x";
+  for (const v of Object.values(data.jobs))
+    if (v.folder && !v.deleted) {
+      f[v.folder + "/Resume.pdf"] = "x";
+      f[v.folder + "/Cover_Letter.pdf"] = "x";
+    }
   return Object.assign(f, extra || {});
 }
 
@@ -45,14 +49,18 @@ const esc2 = async (p) => {
 async function launch() {
   return chromium.launch();
 }
-/* A page on the sample board. connect: click "Turn on saving" (the fake picker returns the fake folder). */
+/* A page on the sample board. connect: click "Turn on saving" (the fake picker returns the fake folder).
+   clock: a start time for Playwright's fake clock. init: a script run before the page's own (after the fake folder). */
 async function mkpage(ctx, opts = {}) {
   const p = await ctx.newPage();
   p.errs = [];
+  p.warns = [];
   p.on("pageerror", (e) => p.errs.push("pageerror: " + e.message));
   p.on("console", (m) => {
     if (m.type() === "error" && !/Failed to load resource/.test(m.text())) p.errs.push("console: " + m.text());
+    if (m.type() === "warning") p.warns.push(m.text());
   });
+  if (opts.clock) await p.clock.install({ time: opts.clock });
   await p.addInitScript(FFS);
   /* settings as if they came from organizer.config.js (the file's own assignment is ignored) */
   if (opts.config)
@@ -62,6 +70,7 @@ async function mkpage(ctx, opts = {}) {
   await p.addInitScript(
     `window.__pick=window.__mk(${JSON.stringify(opts.files || files(opts.extra, opts.text))});window.__pick2=new window.__FDir(${JSON.stringify(opts.second || "Backup")});`,
   );
+  if (opts.init) await p.addInitScript(opts.init);
   await p.goto(opts.url || PAGE);
   await wait(p, 500);
   if (opts.connect) {

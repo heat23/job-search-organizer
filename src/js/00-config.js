@@ -1,7 +1,7 @@
 /* Settings. Everything personal lives here, so the rest of the code stays generic.
    To change a setting without rebuilding, put an `organizer.config.js` file next to the HTML page:
      window.ORGANIZER_CONFIG = { ownerName: "Alex", files: { resume: "Alex_Resume.pdf" } };
-   It is merged over these defaults. Lane ids (todo, applied, screen…) are fixed; their names and timings are not. */
+   It is merged over these defaults. Lane ids (todo, applied, screen…) are fixed; their names, colors and timings are not. */
 const DEFAULT_CONFIG = {
   appTitle: "Job Search Organizer",
   /* Optional. Shown in the page title as "<name>'s job search". */
@@ -65,7 +65,18 @@ const DEFAULT_CONFIG = {
     people: { label: "People", short: "People", noun: "person" },
   },
   closedReasons: ["Rejected", "Withdrew", "Posting closed", "No reply", "Took another offer"],
-  callTypes: ["Recruiter screen", "Hiring manager", "Panel", "Onsite", "Headhunter call", "Other"],
+  /* Call types in the booking box. `label` is what you see and what is stored on the card (callType); `moves` says where
+     booking one moves a job: "screen" (from Applied to Recruiter screen), "interview" (from Applied or Recruiter screen
+     to Interviewing) or "none". Rename the labels freely. A plain string still works: it moves like the old rule
+     (a label with Hiring, Panel or Onsite in it counts as an interview, anything else as a screen). */
+  callTypes: [
+    { label: "Recruiter screen", moves: "screen" },
+    { label: "Hiring manager", moves: "interview" },
+    { label: "Panel", moves: "interview" },
+    { label: "Onsite", moves: "interview" },
+    { label: "Headhunter call", moves: "screen" },
+    { label: "Other", moves: "screen" },
+  ],
   /* The checklist shown on the Headhunters tab (records live in the `plan` collection). */
   plan: {
     title: "Four-week plan",
@@ -129,7 +140,81 @@ function mergeConfig(base, over) {
   }
   return out;
 }
-const CONFIG = mergeConfig(DEFAULT_CONFIG, window.ORGANIZER_CONFIG);
+const CONFIG = mergeConfig(JSON.parse(JSON.stringify(DEFAULT_CONFIG)), window.ORGANIZER_CONFIG);
+/* Lane ids are the fixed contract the code and the data file rely on; a lane's name, color and follow-up days are
+   settings. Arrays in the settings replace the defaults, so a lane list that leaves out a lane (or a call type list
+   in an odd shape) is repaired here with the defaults and a console warning, rather than breaking the page. */
+const CONFIG_WARNINGS = [];
+function checkConfig(cfg) {
+  const warn = (m) => {
+    CONFIG_WARNINGS.push(m);
+    try {
+      console.warn("organizer.config.js: " + m);
+    } catch (e) {}
+  };
+  const lanes = cfg.lanes && typeof cfg.lanes === "object" ? cfg.lanes : {};
+  cfg.lanes = { ...lanes };
+  for (const sec of Object.keys(DEFAULT_CONFIG.lanes)) {
+    const dflt = DEFAULT_CONFIG.lanes[sec];
+    const given = Array.isArray(lanes[sec]) ? lanes[sec] : null;
+    if (lanes[sec] != null && !given) warn(`lanes.${sec} should be a list; using the default lanes.`);
+    const out = [];
+    for (const l of given || dflt) {
+      if (!l || typeof l !== "object" || typeof l.id !== "string" || !l.id) {
+        warn(`lanes.${sec} has an entry without an id; it was skipped.`);
+        continue;
+      }
+      if (out.some((o) => o.id === l.id)) continue;
+      /* a lane you list keeps the default's other settings (color, follow-up days, done) unless you set them */
+      const base = dflt.find((d) => d.id === l.id);
+      out.push(base ? { ...base, ...l } : { ...l });
+    }
+    /* every default lane id is required: put a missing one back next to its neighbor */
+    dflt.forEach((d, i) => {
+      if (out.some((o) => o.id === d.id)) return;
+      warn(`lanes.${sec} is missing the "${d.id}" lane; the default "${d.name}" lane was added back.`);
+      let at = 0;
+      for (let k = i - 1; k >= 0; k--) {
+        const j = out.findIndex((o) => o.id === dflt[k].id);
+        if (j >= 0) {
+          at = j + 1;
+          break;
+        }
+      }
+      out.splice(at, 0, { ...d });
+    });
+    cfg.lanes[sec] = out;
+  }
+  for (const sec of Object.keys(cfg.stale || {})) {
+    const r = cfg.stale[sec];
+    if (!r) continue;
+    const ids = (cfg.lanes[sec] || []).map((l) => l.id);
+    if (!Array.isArray(r.lanes) || (r.close && !ids.includes(r.close))) {
+      warn(`stale.${sec} names a lane that doesn't exist; using the default rule.`);
+      cfg.stale[sec] = DEFAULT_CONFIG.stale[sec] || null;
+    }
+  }
+  /* call types: strings (older settings) or { label, moves } */
+  const MOVES = ["screen", "interview", "none"];
+  const legacy = (label) => (/Hiring|Panel|Onsite/.test(label) ? "interview" : "screen");
+  const types = Array.isArray(cfg.callTypes) ? cfg.callTypes : DEFAULT_CONFIG.callTypes;
+  if (!Array.isArray(cfg.callTypes)) warn("callTypes should be a list; using the default call types.");
+  cfg.callTypes = types
+    .map((t) => {
+      if (typeof t === "string" && t.trim()) return { label: t.trim(), moves: legacy(t) };
+      if (t && typeof t === "object" && typeof t.label === "string" && t.label.trim()) {
+        if (t.moves != null && !MOVES.includes(t.moves))
+          warn(`callTypes "${t.label}" has moves: "${t.moves}"; use screen, interview or none.`);
+        return { ...t, label: t.label.trim(), moves: MOVES.includes(t.moves) ? t.moves : legacy(t.label) };
+      }
+      warn("callTypes has an entry without a label; it was skipped.");
+      return null;
+    })
+    .filter(Boolean);
+  if (!cfg.callTypes.length) cfg.callTypes = DEFAULT_CONFIG.callTypes.map((t) => ({ ...t }));
+  return cfg;
+}
+checkConfig(CONFIG);
 /* The data file next to the page (index.html loads it by this name). */
 const DATA_FILE = "board_data.js";
 

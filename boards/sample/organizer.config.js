@@ -5,13 +5,19 @@ window.ORGANIZER_CONFIG = {
   // files: { resume: "Alex_Resume.pdf", coverLetter: "Alex_Cover_Letter.pdf" },
   // stageFolders: { todo: "1 - To apply", applied: "2 - Applied", closed: "3 - Closed", removed: "4 - Removed" },
   // lanes: { jobs: [ ... ] },                            // rename lanes or change follow-up days (keep the ids)
+  //                                                      // list every lane: { id: "applied", name: "Sent", follow: 10 }
+  // callTypes: [                                         // the booking box; this list replaces the default one
+  //   { label: "Intro call", moves: "screen" },          // label: shown and stored on the card; rename it freely
+  //   { label: "Team interview", moves: "interview" },   // moves: "screen", "interview" or "none" (where booking
+  //   { label: "Coffee chat", moves: "none" },           //   one moves a job); plain strings still work
+  // ],
   // pickerIds: { board: "my-board", secondBackup: "my-backup" },
   // blurPay: true,                                        // blur {.pay} sections until you press H
   // library: {                                            // guide buttons on every prep sheet, with their keys
   //   sheetButtons: [                                     // this list replaces the default one, so keep the first two
   //     { doc: "call-scripts", label: "Scripts", key: "s" },
   //     { doc: "cheat-sheet", label: "Cheat sheet", key: "c" },
-  //     { doc: "company-research", label: "Research", key: "r" }, // Library/<Group>/04_Company_research.md
+  //     { doc: "company-research", label: "Research", key: "r" },// Library/<Group>/04_Company_research.md
   //   ],                                                  // (keys S, C, N, G, H, 1-9 and / are taken)
   // },
   // sections: {                                           // rename the Headhunters and People tabs

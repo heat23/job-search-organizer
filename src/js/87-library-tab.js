@@ -87,20 +87,23 @@ function renderLibrary(v) {
             .replace(/\*\*|\*|(^|\s)>\s?|:::\s*fold|\{\.pay\}|\|/g, " ")
             .replace(/\s+/g, " ");
           const k = plainT.toLowerCase().indexOf(t);
-          if (k >= 0 && u.body.length > 60)
+          if (k >= 0)
             hits.push({
               id,
               sec: s.title,
               t: u.t,
               len: u.body.length,
+              real: u.body.length > 60,
+              inTitle: String(u.t).toLowerCase().includes(t),
               pay: !!u.pay,
               snip: plainT.slice(Math.max(0, k - 40), k + 100),
             });
         }
       }
     }
-    /* the longest answers first: a real answer beats a one-line mention */
-    hits.sort((a, b) => b.len - a.len);
+    /* real answers first (a one-line mention or a short answer comes after), then a hit in the question itself,
+       then the longer answer */
+    hits.sort((a, b) => b.real - a.real || b.inTitle - a.inTitle || b.len - a.len);
     $qa("a[data-doc]", nav).forEach((a) => a.classList.remove("on"));
     const snip = (h) =>
       h.pay && CONFIG.blurPay ? `<span class="paynote-s">Pay: open it to see</span>` : `<span>…${esc(h.snip)}…</span>`;

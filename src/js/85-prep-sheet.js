@@ -14,14 +14,15 @@ const SHORT = (t) => {
   for (const [re, to] of PILL_LABELS) if (re.test(t)) return t.replace(re, to);
   return t;
 };
-/* The outreach guide: one "## Name, Firm" block per contact with **Connection request** and **Follow-up message** quotes. */
+/* The outreach guide: one "## Name, Firm" block per contact with **Connection request** and **Follow-up message** quotes.
+   Keyed by the loosely compared name (normName), so "## jonah  whitfield, …" still finds Jonah Whitfield. */
 function parseOutreach(md) {
   const out = {};
   for (const blk of String(md).split(/^## /m).slice(1)) {
     const name = blk.split("\n")[0].split(",")[0].trim();
     const req = (blk.match(/\*\*Connection request\*\*[^\n]*\n\n((?:>.*\n?)+)/) || [])[1];
     const msg = (blk.match(/\*\*Follow-up message\*\*[^\n]*\n\n((?:>.*\n?)+)/) || [])[1];
-    out[name] = {
+    out[normName(name)] = {
       req: req ? req.replace(/^>\s?/gm, "").trim() : "",
       msg: msg ? msg.replace(/^>\s?/gm, "").trim() : "",
     };
@@ -32,8 +33,10 @@ function hunterSections(id, x) {
   const L = CONFIG.library;
   const nav = [];
   let h = "";
+  /* people whose company is this headhunter's name or firm, compared loosely (see normName) */
+  const names = [x.name, x.firm].map(normName).filter(Boolean);
   const ppl = Object.entries(live("people")).filter(
-    ([, p]) => p.company === x.name || (x.firm && p.company === x.firm),
+    ([, p]) => normName(p.company) && names.includes(normName(p.company)),
   );
   const OD = DOCS[L.outreachDoc] && DOCS[L.outreachDoc].md ? parseOutreach(DOCS[L.outreachDoc].md) : {};
   const script = L.hunterScript
@@ -47,7 +50,7 @@ function hunterSections(id, x) {
   if (!ppl.length)
     h += `<p class="muted">No people on the board for this firm yet. Add them on the People tab with this firm as their company.</p>`;
   for (const [, p] of ppl) {
-    const m = OD[p.name] || {};
+    const m = OD[normName(p.name)] || {};
     const ln = laneOf("people", laneKey("people", p)).name;
     h += `<div class="hq"><h4><span>${p.url && /^https?:/.test(p.url) ? `<a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.name)} ↗</a>` : esc(p.name)}</span><span class="muted" style="font-weight:400;font-size:13px">${esc(ln)}${p.followUp ? " · follow up " + esc(fmtDate(p.followUp)) : ""}</span></h4>`;
     if (m.req)

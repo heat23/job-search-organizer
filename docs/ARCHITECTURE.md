@@ -21,7 +21,7 @@ flowchart LR
 
 | File | What it does |
 |---|---|
-| `src/js/00-config.js` | Every personal choice (lanes, folder and file names, follow-up days, picker ids). Merged with `organizer.config.js`. |
+| `src/js/00-config.js` | Every personal choice (lanes, call types, folder and file names, follow-up days, picker ids). Merged with `organizer.config.js`, then checked: lane ids are fixed, so a missing lane is added back with a console warning. |
 | `src/js/30-store.js` | The data model: five collections of records keyed by id, merged by `updatedAt` so the newer edit wins. |
 | `src/js/40-storage.js` | Saving to the folder, the daily data backup, and moving job folders between stage folders. |
 | `src/js/50-render.js` … `70-drawer.js` | Next up, the boards, cards, to-dos, the plan and the card panel. |
@@ -39,11 +39,11 @@ The scripts are classic scripts joined in file-name order, not ES modules, becau
 - **Never overwrite unread text.** The notes pad re-reads `my_notes.md` before each write. If the file changed on disk, the other version is saved beside it as `my_notes.changed-on-disk-<time>.md`.
 - **Refuse a broken file.** If `board_data.js` can't be parsed, the page keeps your changes in the browser and doesn't overwrite it.
 - **Per-folder storage.** Browser storage is shared by all pages opened from disk, so every key carries the page's folder: the sample board and your own never mix.
-- **Backups.** A daily copy of the data file (14 kept) and of your notes (60 kept) in `backups/`, plus an optional daily copy of the whole folder somewhere else (5 kept).
+- **Backups.** A daily copy of the data file (14 kept, taken on the first save of the day or at start-up on a day without edits) and of your notes (60 kept) in `backups/`, plus an optional daily copy of the whole folder somewhere else (5 kept).
 
 ## Tests
 
-`npm test` runs 226 checks in headless Chromium against a copy of `boards/sample`. An in-memory folder (`src/demo/memfs.js`, with test hooks in `tests/ffs.js`) stands in for the folder picker, so the tests cover saving, conflicts, permission loss and write failures without touching the disk.
+`npm test` runs 300 checks in headless Chromium against a copy of `boards/sample`. An in-memory folder (`src/demo/memfs.js`, with test hooks in `tests/ffs.js`) stands in for the folder picker, so the tests cover saving, conflicts, permission loss and write failures without touching the disk.
 
 ## The live demo
 

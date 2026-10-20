@@ -1,8 +1,17 @@
 /* ================= calls: book them on a card, see them on Next up =================
    Fields on a job or headhunter: callAt (local time, "YYYY-MM-DDTHH:MM"), callType, callWith, callLink.
    Booking moves the card forward (a recruiter call to Recruiter screen, a later round to Interviewing)
-   and sets the follow-up to the day after the call. */
+   and sets the follow-up to the day after the call. callType stores the label; where it moves a job comes from the
+   type's `moves` setting, never from the wording, so the labels can be renamed. */
 const CALLTYPES = CONFIG.callTypes;
+/* Where booking a call of this type moves a job. A label that is no longer in the settings (an older card) falls back
+   to the default list, then to the old wording rule. */
+function callMoves(label) {
+  const l = String(label || "").trim();
+  const t = CALLTYPES.find((c) => c.label === l) || DEFAULT_CONFIG.callTypes.find((c) => c.label === l);
+  if (t) return t.moves;
+  return /Hiring|Panel|Onsite/.test(l) ? "interview" : "screen";
+}
 const parseCall = (v) => {
   if (typeof v !== "string" || !v) return NaN;
   return Date.parse(/^\d{4}-\d\d-\d\d$/.test(v) ? v + "T09:00" : v);
@@ -61,7 +70,11 @@ function callRow(sec, id, x, strip, summary) {
   type.setAttribute("aria-label", "Call type");
   type.innerHTML =
     '<option value="">Call type…</option>' +
-    CALLTYPES.map((t) => `<option${x.callType === t ? " selected" : ""}>${esc(t)}</option>`).join("");
+    CALLTYPES.map((t) => t.label)
+      /* a type that was renamed in the settings since this call was booked stays selectable, so it isn't cleared */
+      .concat(x.callType && !CALLTYPES.some((t) => t.label === x.callType) ? [x.callType] : [])
+      .map((t) => `<option${x.callType === t ? " selected" : ""}>${esc(t)}</option>`)
+      .join("");
   const when = mk("input");
   when.type = "datetime-local";
   when.value = toLocalInput(x.callAt);
@@ -159,9 +172,9 @@ function autoMove(sec, id, type) {
   if (!x) return;
   const ln = laneKey(sec, x);
   if (sec === "jobs") {
-    const later = /Hiring|Panel|Onsite/.test(type || "");
-    if (later && (ln === "applied" || ln === "screen")) moveCard(sec, id, "interview");
-    else if (!later && ln === "applied") moveCard(sec, id, "screen");
+    const to = callMoves(type);
+    if (to === "interview" && (ln === "applied" || ln === "screen")) moveCard(sec, id, "interview");
+    else if (to === "screen" && ln === "applied") moveCard(sec, id, "screen");
   } else if (sec === "hunters" && ["todo", "registered", "contacted"].includes(ln)) moveCard(sec, id, "talking");
 }
 /* Next up: the list of booked calls */

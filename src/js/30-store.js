@@ -30,7 +30,6 @@ const STR = [
   "resume",
   "sentResume",
   "folder",
-  "frozen",
   "changedBy",
 ];
 function clean(r) {

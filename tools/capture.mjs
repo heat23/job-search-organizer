@@ -59,6 +59,12 @@ const b = await chromium.launch();
     "Recruiter: Jordan. Team of 8, Go and Postgres.\nNext: system design round with the tech lead.",
   );
   await p.waitForTimeout(1500);
+  // bring a "Their answer" box ({.ask} in prep.md) into view, with what the interviewer said
+  const ask = p.locator("#drawerRoot details.mine.ask").first();
+  await ask.evaluate((d) => d.scrollIntoView({ block: "center" }));
+  await ask.locator("textarea").fill("Reports to the payments director. Team of six, two in Denver.");
+  await p.waitForTimeout(1200);
+  await p.locator("#notes-pad").focus();
   await shot(p, "prep-sheet.png");
   await p.keyboard.press("Escape");
   await p.keyboard.press("Escape");

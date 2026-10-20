@@ -29,6 +29,15 @@ function safeUrl(u) {
     return null;
   }
 }
+/* Company and contact names compared loosely: case, spacing and punctuation are ignored and "&" equals "and"
+   ("Summit & Vale Partners" = "summit and vale partners."). Nothing else is dropped, so different names stay different. */
+const normName = (s) =>
+  String(s || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const $ = (s, r = document) => r.querySelector(s);
 /* el("div",{class:"x",onclick:fn,text:"hi"},child1,child2): text is always set as text, never as HTML. */

@@ -30,10 +30,17 @@ function refreshDrawerHead() {
   }
 }
 /* Another tool (an AI assistant) changed the open record and the change was merged in the background: bring the panel's
-   fields up to date, so a later edit can't write the old text back over the newer value. A field you are typing in, or
-   one with an unsaved edit, is left as it is: your typing wins there. The notes pad and the answer boxes keep their
-   own files and are not touched. A plain panel whose stage changed (or whose prep sheet just appeared) is rebuilt
-   when nothing in it is being edited. */
+   fields up to date, so a later edit can't write the old text back over the newer value. A field with an unsaved edit,
+   or one you have typed in since you focused it, is left as it is: your typing wins there. A focused field you haven't
+   changed takes the new value (caret at the end). The notes pad and the answer boxes keep their own files and are not
+   touched. A plain panel whose stage changed (or whose prep sheet just appeared) is rebuilt when nothing in it is
+   being edited. */
+const focusVal = new WeakMap();
+document.addEventListener("focusin", (e) => {
+  const n = e.target;
+  if (n && n.dataset && n.dataset.fkey) focusVal.set(n, n.value);
+});
+const untouched = (n) => !pending[n.dataset.fkey] && focusVal.has(n) && focusVal.get(n) === n.value;
 function fieldValue(n, x) {
   const k = n.dataset.fkey,
     kind = n.dataset.fkind;
@@ -58,7 +65,7 @@ function refreshDrawer() {
     return;
   }
   d.querySelectorAll("[data-fkey]").forEach((n) => {
-    if (n === a || pending[n.dataset.fkey]) return;
+    if (pending[n.dataset.fkey] || (n === a && !untouched(n))) return;
     const v = fieldValue(n, x);
     if (n.dataset.fkind === "ref" && v && ![...n.options].some((o) => o.value === v)) {
       const p = get("people", v);
@@ -66,7 +73,14 @@ function refreshDrawer() {
         el("option", { value: v, text: [p.name || "Someone", p.company].filter(Boolean).join(" · ") }),
       );
     }
-    if (n.value !== v) n.value = v;
+    if (n.value === v) return;
+    n.value = v;
+    if (n === a) {
+      focusVal.set(n, n.value);
+      try {
+        n.setSelectionRange(n.value.length, n.value.length);
+      } catch (e) {}
+    }
   });
   d.querySelectorAll("#lanepick button").forEach((b) => b.setAttribute("aria-pressed", String(b.id === "lp-" + ln)));
   d.querySelectorAll("[data-reason]").forEach((c) =>

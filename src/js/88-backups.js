@@ -1,5 +1,5 @@
 /* ================= backups =================
-   1. Every day, the first save copies the data file into backups/ (see storage.js).
+   1. Every day, the first save (or start-up, on a day without edits) copies the data file into backups/ (see storage.js).
    2. Every day, your notes (every my_notes.md under Job notes, and Library/My_answers.md) are copied into backups/notes_<date>/.
    3. Optional: a second folder somewhere else (an external drive, a synced folder) gets a full copy of the board folder
       once a day. It can't be inside the board folder itself. */
@@ -188,6 +188,7 @@ let startedUp = false;
 async function startup() {
   if (!FS.ok()) return;
   await scanPrep();
+  await backupToday();
   const day = TODAY();
   const last = lsGet(BK_DAY, "");
   let msg = "";
